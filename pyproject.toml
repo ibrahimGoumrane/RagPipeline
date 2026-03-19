@@ -1,0 +1,46 @@
+[project]
+name = "chunks"
+version = "0.1.0"
+description = "Docling + LlamaParse RAG chunking pipeline"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "docling[ocr]>=2.80.0",
+    "llama-parse",
+    "llama-index-core",
+    "llama-index-readers-file",
+    "torch>=2.4.0",
+    "torchvision",
+    "torchaudio",
+    "transformers>=4.45.0",
+    "optimum>=1.23.0",
+    "pillow>=11.0.0",
+    "requests>=2.32.2",
+    "sentencepiece>=0.2.0",
+    "datasets>=3.0.0",
+    "opencv-python-headless>=4.13.0.92",
+    "docling-hierarchical-pdf>=0.1.5",
+]
+
+# ── Index configuration ───────────────────────────────────────────────────────
+# PyPI is the default for everything.
+# PyTorch CUDA index is used ONLY for torch/torchvision/torchaudio.
+# unsafe-best-match ensures requests comes from PyPI, not the pytorch index.
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+torchaudio = { index = "pytorch-cu128" }
+
+[tool.uv]
+index-strategy = "unsafe-best-match"
