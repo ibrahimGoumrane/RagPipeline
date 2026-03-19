@@ -1,4 +1,5 @@
 from .extract import DoclingExtractor
+from .chunk import Chunker
 from .logger import get_logger
 
 """Utils package for the document extraction and logging.
@@ -8,5 +9,5 @@ Documentation:
 2. get_logger: A function that sets up and returns a logger instance for consistent logging across the application. It configures both file and console handlers with appropriate formatting.
 """
 
-__all__ = ["DoclingExtractor", "get_logger"]
+__all__ = ["DoclingExtractor", "Chunker", "get_logger"]
 
