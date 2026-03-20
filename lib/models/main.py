@@ -23,6 +23,7 @@ class ChunkRunOutput(BaseModel):
 class DispatchRunOutput(BaseModel):
 	status: str = "success"
 	message: str = "Dispatch completed"
+	chunks: list[tuple[int, int]] = Field(default_factory=list)
 
 
 class WorkRunOutput(BaseModel):

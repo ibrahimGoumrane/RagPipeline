@@ -21,6 +21,7 @@ dependencies = [
     "datasets>=3.0.0",
     "opencv-python-headless>=4.13.0.92",
     "docling-hierarchical-pdf>=0.1.5",
+    "pymupdf>=1.27.2",
 ]
 
 # ── Index configuration ───────────────────────────────────────────────────────

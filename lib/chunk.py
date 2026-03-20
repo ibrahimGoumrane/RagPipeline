@@ -19,7 +19,6 @@ from typing import Any
 
 from bs4 import BeautifulSoup
 
-from lib.config import cfg
 from lib.models.main import ChunkRunOutput
 from lib.utils.logger import get_logger
 
@@ -36,10 +35,10 @@ class Chunker:
         min_words: int | None = None,
         overlap_sentences: int | None = None,
     ):
-        self.doc_id           = doc_id           or cfg.doc_id
-        self.max_words        = max_words        or cfg.max_words_per_chunk
-        self.min_words        = min_words        or cfg.min_words_per_chunk
-        self.overlap_sentences= overlap_sentences if overlap_sentences is not None else cfg.overlap_sentences
+        self.doc_id           = doc_id
+        self.max_words        = max_words      
+        self.min_words        = min_words    
+        self.overlap_sentences= overlap_sentences if overlap_sentences is not None else 2
         self.logger = get_logger(name="Chunker", log_level=logging.INFO)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
@@ -267,7 +266,7 @@ class Chunker:
 
     def run_to_output(self, markdown: str, output_dir: str | None = None) -> ChunkRunOutput:
         """Chunk markdown, write JSON files to disk, return ChunkRunOutput."""
-        out_dir = Path(output_dir or cfg.output_dir) / "chunks"
+        out_dir = Path(output_dir) / "chunks"
         out_dir.mkdir(parents=True, exist_ok=True)
 
         parents, children = self.run(markdown)

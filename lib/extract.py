@@ -20,7 +20,6 @@ from docling.document_converter import DocumentConverter, PdfFormatOption
 from docling_core.types.doc.document import ListItem, PictureItem, SectionHeaderItem, TableItem, TextItem
 
 from hierarchical.postprocessor import ResultPostprocessor
-from lib.config import cfg
 from lib.models.main import ExtractRunOutput
 from lib.utils.logger import get_logger
 
@@ -36,11 +35,11 @@ class DoclingExtractor:
         model_api_model: str | None = None,
     ):
         self.pdf_path                  = pdf_path
-        self.output_dir                = Path(output_dir or cfg.output_dir)
-        self.use_image_processor       = use_image_processor       if use_image_processor       is not None else cfg.use_image_processor
-        self.use_hierarchical_headings = use_hierarchical_headings if use_hierarchical_headings is not None else cfg.use_hierarchical_headings
-        self.model_api_url             = model_api_url   or cfg.model_api_url
-        self.model_api_model           = model_api_model or cfg.model_api_model
+        self.output_dir                = Path(output_dir)
+        self.use_image_processor       = use_image_processor  
+        self.use_hierarchical_headings = use_hierarchical_headings
+        self.model_api_url             = model_api_url  
+        self.model_api_model           = model_api_model 
         self.logger = get_logger(name="DoclingExtractor", log_level=logging.INFO)
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
