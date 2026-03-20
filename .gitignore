@@ -12,3 +12,5 @@ uv.lock
 # logs & output
 logs/
 output/
+
+.env
