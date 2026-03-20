@@ -5,10 +5,10 @@ from __future__ import annotations
 from typing import Any
 
 from pydantic import BaseModel, Field
-
+from docling_core.types.doc.document import DoclingDocument
 
 class ExtractRunOutput(BaseModel):
-	markdown_content: str
+	document: DoclingDocument
 	output_file: str
 	output_dir: str
 
@@ -26,9 +26,9 @@ class DispatchRunOutput(BaseModel):
 	chunks: list[tuple[int, int]] = Field(default_factory=list)
 
 
-class WorkRunOutput(BaseModel):
+class WorkRunOutput(ChunkRunOutput):
+	worker_id: int
 	status: str = "success"
-	result_data: dict[str, Any] = Field(default_factory=dict)
 
 
 class MergeRunOutput(BaseModel):

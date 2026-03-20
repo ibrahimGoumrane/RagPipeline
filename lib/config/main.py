@@ -28,7 +28,6 @@ class Config:
     doc_id: str
     min_words_per_chunk: int
     max_words_per_chunk: int
-    overlap_sentences: int
 
     # Extractor
     pdf_path: str
@@ -50,7 +49,6 @@ cfg = Config(
     doc_id                   = os.getenv("DOC_ID", "document_001"),
     min_words_per_chunk      = int(os.getenv("MIN_WORDS_PER_CHUNK", "200")),
     max_words_per_chunk      = int(os.getenv("MAX_WORDS_PER_CHUNK", "400")),
-    overlap_sentences        = int(os.getenv("OVERLAP_SENTENCES", "1")),
     use_image_processor      = os.getenv("USE_IMAGE_PROCESSOR", "true").lower() == "true",
     use_hierarchical_headings= os.getenv("USE_HIERARCHICAL_HEADINGS", "true").lower() == "true",
     model_api_url            = os.getenv("MODEL_API_URL", ""),

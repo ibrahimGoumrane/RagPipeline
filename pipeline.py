@@ -21,9 +21,8 @@ def main() -> None:
         doc_id=cfg.doc_id,
         max_words=cfg.max_words_per_chunk,
         min_words=cfg.min_words_per_chunk,
-        overlap_sentences=cfg.overlap_sentences,
     )
-    chunker.run_to_output(result.markdown_content)
+    chunker.run_to_output(result.document, output_dir=cfg.output_dir)
 
 
 if __name__ == "__main__":

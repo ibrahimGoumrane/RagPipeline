@@ -15,9 +15,11 @@ import pymupdf
 from lib.models.main import DispatchRunOutput
 
 class Dispatch:
-    def __init__(self, pdf_path: str, num_workers: int):
+    def __init__(self, pdf_path: str, num_workers: int, overlap_pages: int = 0):
         self.pdf_path = pdf_path
         self.num_workers = num_workers
+        self.overlap_pages = overlap_pages
+
 
     def _page_ranges(self) -> list[tuple[int, int]]:
         doc = pymupdf.open(self.pdf_path)
@@ -25,13 +27,19 @@ class Dispatch:
         doc.close()
 
         size   = (n + self.num_workers - 1) // self.num_workers
-        return [(i, min(i + size, n)) for i in range(0, n, size)]
+        ranges: list[tuple[int, int]] = []
+        for i in range(0, n, size):
+            start = max(i - self.overlap_pages, 0)
+            end = min(i + size, n)
+            ranges.append((start, end))
+
+        return ranges
 
     def run(self) -> DispatchRunOutput:
         ranges = self._page_ranges()
         return DispatchRunOutput(
             status="success",
-            message=f"Dispatched {len(ranges)} chunks",
+            message=f"Dispatched {len(ranges)} chunks (overlap_pages={self.overlap_pages})",
             chunks=ranges,
         )
     

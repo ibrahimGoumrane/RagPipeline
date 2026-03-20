@@ -1,30 +1,15 @@
-"""
-Markdown chunker — splits a markdown string into parent + child chunks for RAG.
-
-Usage:
-    chunker           = Chunker(doc_id="my-doc")
-    parents, children = chunker.run(markdown_text)
-    # or get a typed output:
-    result = chunker.run_to_output(markdown_text, output_dir="output/chunks")
-"""
-
 from __future__ import annotations
 
 import json
 import logging
-import re
 import uuid
 from pathlib import Path
 from typing import Any
 
-from bs4 import BeautifulSoup
+from docling_core.types.doc.document import DoclingDocument, TextItem , SectionHeaderItem, TableItem, PictureItem
 
 from lib.models.main import ChunkRunOutput
 from lib.utils.logger import get_logger
-
-
-HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
-FIGURE_RE  = re.compile(r"!\[(.*?)\]\((.*?)\)")
 
 
 class Chunker:
@@ -33,249 +18,171 @@ class Chunker:
         doc_id: str | None = None,
         max_words: int | None = None,
         min_words: int | None = None,
-        overlap_sentences: int | None = None,
     ):
-        self.doc_id           = doc_id
-        self.max_words        = max_words      
-        self.min_words        = min_words    
-        self.overlap_sentences= overlap_sentences if overlap_sentences is not None else 2
+        self.doc_id = doc_id or "default-doc"
         self.logger = get_logger(name="Chunker", log_level=logging.INFO)
+        self.max_words = max_words
+        self.min_words = min_words
+        self._init_buffer()
 
-    # ── Helpers ───────────────────────────────────────────────────────────────
+    def _init_buffer(self):
+        """Initializes or resets the chunking buffer."""
+        self.chunk_buffer = []
+        self.buffer_word_count = 0
+        self.buffer_parent_id = None
+        self.buffer_page_no = None
 
-    @staticmethod
-    def _word_count(text: str) -> int:
-        return len(text.split())
+    def _flush_buffer(self, children_list: list) -> None:
+        """Flushes the current buffer contents into a new child chunk and appends it."""
+        if self.chunk_buffer and self.buffer_parent_id is not None and self.buffer_page_no is not None:
+            merged_text = "\n\n".join(self.chunk_buffer)
+            child = self._create_child_chunk(
+                self.buffer_parent_id, self.buffer_page_no, merged_text, "text"
+            )
+            children_list.append(child)
+        self._init_buffer()
 
-    @staticmethod
-    def _sentences(text: str) -> list[str]:
-        return [p.strip() for p in re.split(r"(?<=[.!?])\s+", text.strip()) if p.strip()]
+    def _add_to_buffer_and_flush(
+        self, 
+        content: str, 
+        parent_id: str, 
+        page_no: int, 
+        children_list: list
+    ) -> None:
+        item_word_count = len(content.split())
 
-    def _new_parent(self, heading: str) -> dict[str, Any]:
+        # Flush if adding this exceeds max_words and buffer has content
+        if self.max_words and self.buffer_word_count + item_word_count > self.max_words and self.chunk_buffer:
+            self._flush_buffer(children_list)
+            self.buffer_parent_id = parent_id
+            self.buffer_page_no = page_no
+
+        self.chunk_buffer.append(content)
+        self.buffer_word_count += item_word_count
+
+        # Flush if min_words is reached
+        if self.min_words and self.buffer_word_count >= self.min_words:
+            self._flush_buffer(children_list)
+            self.buffer_parent_id = parent_id
+            self.buffer_page_no = page_no
+
+    def _create_child_chunk(
+        self, parent_id: str, page_no: int, content: str, element_type: str
+    ) -> dict[str, Any]:
         return {
-            "parent_id":     str(uuid.uuid4()),
-            "heading_path":  [heading],
-            "doc_id":        self.doc_id,
-            "content_lines": [],
+            "chunk_id": str(uuid.uuid4()),
+            "parent_id": parent_id,
+            "element_type": element_type,
+            "page_ref": page_no,
+            "doc_id": self.doc_id,
+            "content": content.strip(),
+            "content_for_embedding": f"Page: {page_no}\n{content.strip()}",
+            "token_estimate": len(content.split()),
         }
 
-    def _child(self, text: str, kind: str, parent: dict[str, Any]) -> dict[str, Any]:
-        section = " > ".join(parent["heading_path"])
-        return {
-            "chunk_id":              str(uuid.uuid4()),
-            "parent_id":             parent["parent_id"],
-            "element_type":          kind,
-            "heading_path":          parent["heading_path"],
-            "doc_id":                self.doc_id,
-            "content":               text,
-            "content_for_embedding": f"Section : {section}\n{text}",
-            "token_estimate":        self._word_count(text),
-        }
+    def run_from_docling_document(
+        self,
+        doc: DoclingDocument,
+        exclude_pages: set[int] | None = None,
+    ) -> tuple[list[dict], list[dict]]:
+        """Chunk from a DoclingDocument, grouping items by page."""
+        exclude_pages = exclude_pages or set()
+        pages_content = {}
 
-    # ── Block extraction ──────────────────────────────────────────────────────
+        for item, _ in doc.iterate_items():  
+            try:
+                page_no = None
+                if hasattr(item, "prov") and item.prov:
+                    page_no = item.prov[0].page_no
 
-    def _extract_blocks(self, markdown: str) -> tuple[list[dict], list[dict]]:
-        parents: list[dict] = []
-        blocks:  list[dict] = []
+                if page_no is None:
+                    self.logger.warning(f"Could not determine page number for item type '{type(item).__name__}'")
+                    continue
 
-        current   = self._new_parent("[Racine]")
-        para_buf:  list[str] = []
-        table_buf: list[str] = []
-        parents.append(current)
+                if page_no in exclude_pages:
+                    continue
 
-        def flush_para():
-            text = " ".join(para_buf).strip()
-            if text:
-                blocks.append({"kind": "paragraph", "content": text, "parent": current})
-            para_buf.clear()
+                if page_no not in pages_content:
+                    pages_content[page_no] = []
 
-        def flush_table():
-            html = "\n".join(table_buf).strip()
-            if html:
-                blocks.append({"kind": "table", "content": html, "parent": current})
-            table_buf.clear()
+                if isinstance(item, SectionHeaderItem):
+                    pages_content[page_no].append({"type": "header", "content": item.text})
+                elif isinstance(item, TextItem):
+                    pages_content[page_no].append({"type": "text", "content": item.text})
+                elif isinstance(item, TableItem):
+                    try:
+                        html = item.export_to_html(doc=doc)
+                        pages_content[page_no].append({"type": "table", "content": html})
+                    except Exception as e:
+                        self.logger.warning(f"Failed to export table on page {page_no} to HTML: {e}")
+                        pages_content[page_no].append({"type": "table", "content": "Unparsed Table"})
+                elif isinstance(item, PictureItem):
+                    caption = "Figure"
+                    if hasattr(item, "captions") and item.captions:
+                        caption = item.captions[0].text
+                    pages_content[page_no].append({"type": "figure", "content": f"Figure : {caption}"})
+            except Exception as e:
+                self.logger.error(f"Error processing item on doc iteration: {e}", exc_info=True)
 
-        for raw in markdown.splitlines():
-            line = raw.strip()
+        parents = []
+        children = []
+        
+        current_header = ""
+        self._init_buffer()
 
-            m = HEADING_RE.match(line)
-            if m and not table_buf:
-                flush_para()
-                current = self._new_parent(m.group(2).strip())
-                parents.append(current)
-                continue
+        for page_no, items in sorted(pages_content.items()):
+            parent_id = str(uuid.uuid4())
+            page_text_lines = []
+            
+            if self.buffer_parent_id is None:
+                self.buffer_parent_id = parent_id
+                self.buffer_page_no = page_no
 
-            current["content_lines"].append(raw)
+            for item in items:
+                page_text_lines.append(item["content"])
+                if not item["content"].strip():
+                    continue
 
-            if table_buf:
-                table_buf.append(raw)
-                if "</table>" in line.lower():
-                    flush_table()
-                continue
+                if item["type"] == "header":
+                    current_header = item["content"]
+                    continue
+                
+                content = item["content"]
+                if current_header:
+                    content = f"{current_header}\n{content}"
 
-            if "<table" in line.lower():
-                flush_para()
-                table_buf.append(raw)
-                if "</table>" in line.lower():
-                    flush_table()
-                continue
+                self._add_to_buffer_and_flush(content, parent_id, page_no, children)
 
-            if FIGURE_RE.search(line):
-                flush_para()
-                blocks.append({"kind": "figure", "content": line, "parent": current})
-                continue
+            parents.append({
+                "parent_id": parent_id,
+                "doc_id": self.doc_id,
+                "page_no": page_no,
+                "full_content": "\n".join(page_text_lines),
+            })
 
-            if line:
-                para_buf.append(line)
-            else:
-                flush_para()
+        # Flush any remaining content in the buffer
+        self._flush_buffer(children)
 
-        flush_para()
-        flush_table()
-        return parents, blocks
+        self.logger.info("Chunking done — %d page parents, %d children", len(parents), len(children))
+        return parents, children
 
-    # ── Chunk producers ───────────────────────────────────────────────────────
-
-    def _chunk_paragraph(self, text: str, parent: dict) -> list[dict]:
-        sentences = self._sentences(text)
-        if not sentences:
-            return []
-
-        chunks: list[dict] = []
-        window: list[str]  = []
-
-        for s in sentences:
-            window.append(s)
-            if self._word_count(" ".join(window)) >= self.max_words:
-                overlap = self.overlap_sentences
-                emit    = " ".join(window[:-overlap] if overlap and len(window) > overlap else window)
-                window  = window[-overlap:] if overlap and len(window) > overlap else []
-                if emit.strip():
-                    chunks.append(self._child(emit, "paragraph", parent))
-
-        if window:
-            chunks.append(self._child(" ".join(window), "paragraph", parent))
-
-        return chunks
-
-    def _chunk_table(self, html: str, parent: dict) -> list[dict]:
-        soup = BeautifulSoup(html, "html.parser")
-        rows = soup.find_all("tr")
-        if not rows:
-            self.logger.warning("Empty table under '%s' — skipped", " > ".join(parent["heading_path"]))
-            return []
-
-        headers = []
-        for row in rows:
-            ths = row.find_all("th")
-            if ths:
-                headers = [th.get_text(strip=True) for th in ths]
-                break
-
-        section    = " > ".join(parent["heading_path"])
-        header_str = " | ".join(headers)
-        chunks: list[dict] = []
-
-        for row in rows:
-            values = [c.get_text(strip=True) for c in row.find_all(["td", "th"])]
-            if not values or values == headers:
-                continue
-            text = f"Tableau - {section} | En-têtes: {header_str} | Ligne: {' | '.join(values)}"
-            chunks.append(self._child(text, "table_row", parent))
-
-        return chunks
-
-    def _chunk_figure(self, content: str, parent: dict) -> list[dict]:
-        m       = FIGURE_RE.search(content)
-        caption = m.group(1).strip() if m else ""
-        path    = m.group(2).strip() if m else ""
-        if not caption and not path:
-            return []
-        text  = f"Figure : {caption}" if caption else "Figure sans légende"
-        chunk = self._child(text, "figure", parent)
-        if path:
-            chunk["figure_ref"] = path
-        return [chunk]
-
-    # ── Post-processing ───────────────────────────────────────────────────────
-
-    def _merge_small(self, chunks: list[dict]) -> list[dict]:
-        out = chunks[:]
-        i = 0
-        while i < len(out) - 1:
-            cur, nxt = out[i], out[i + 1]
-            if (
-                cur["element_type"] == "paragraph"
-                and nxt["element_type"] == "paragraph"
-                and cur["parent_id"] == nxt["parent_id"]
-                and self._word_count(cur["content"]) < self.min_words
-            ):
-                nxt["content"]               = f"{cur['content']} {nxt['content']}".strip()
-                nxt["content_for_embedding"] = f"Section : {' > '.join(nxt['heading_path'])}\n{nxt['content']}"
-                nxt["token_estimate"]        = self._word_count(nxt["content"])
-                out.pop(i)
-            else:
-                i += 1
-
-        if len(out) >= 2:
-            last, prev = out[-1], out[-2]
-            if (
-                last["element_type"] == "paragraph"
-                and prev["element_type"] == "paragraph"
-                and last["parent_id"] == prev["parent_id"]
-                and self._word_count(last["content"]) < self.min_words
-            ):
-                prev["content"]               = f"{prev['content']} {last['content']}".strip()
-                prev["content_for_embedding"] = f"Section : {' > '.join(prev['heading_path'])}\n{prev['content']}"
-                prev["token_estimate"]        = self._word_count(prev["content"])
-                out.pop()
-
-        return out
-
-    # ── Public API ────────────────────────────────────────────────────────────
-
-    def run(self, markdown: str) -> tuple[list[dict], list[dict]]:
-        """Chunk markdown. Returns (parents, children) as plain dicts."""
-        parents_raw, blocks = self._extract_blocks(markdown)
-
-        children: list[dict] = []
-        for block in blocks:
-            kind, content, parent = block["kind"], block["content"], block["parent"]
-            if kind == "paragraph":
-                children.extend(self._chunk_paragraph(content, parent))
-            elif kind == "table":
-                children.extend(self._chunk_table(content, parent))
-            elif kind == "figure":
-                children.extend(self._chunk_figure(content, parent))
-
-        children = self._merge_small(children)
-
-        parents_out = [
-            {
-                "parent_id":    p["parent_id"],
-                "heading_path": p["heading_path"],
-                "doc_id":       p["doc_id"],
-                "full_content": "\n".join(p["content_lines"]),
-            }
-            for p in parents_raw
-            if p["content_lines"]
-        ]
-
-        self.logger.info("Chunking done — %d parents, %d children", len(parents_out), len(children))
-        return parents_out, children
-
-    def run_to_output(self, markdown: str, output_dir: str | None = None) -> ChunkRunOutput:
-        """Chunk markdown, write JSON files to disk, return ChunkRunOutput."""
-        out_dir = Path(output_dir) / "chunks"
+    def run_to_output(
+        self,
+        document: DoclingDocument,
+        output_dir: str | None = None,
+        exclude_pages: set[int] | None = None,
+    ) -> ChunkRunOutput:
+        """Process DoclingDocument directly and write outputs."""
+        out_dir = Path(output_dir) / "chunks" if output_dir else Path("output/chunks")
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        parents, children = self.run(markdown)
+        parents, children = self.run_from_docling_document(document, exclude_pages=exclude_pages)
 
         vector_path = out_dir / "chunks_vector.json"
         parent_path = out_dir / "chunks_parent.json"
 
         vector_path.write_text(json.dumps(children, ensure_ascii=False, indent=2), encoding="utf-8")
-        parent_path.write_text(json.dumps(parents,  ensure_ascii=False, indent=2), encoding="utf-8")
+        parent_path.write_text(json.dumps(parents, ensure_ascii=False, indent=2), encoding="utf-8")
 
         self.logger.info("Outputs written to %s", out_dir)
 
