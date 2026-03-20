@@ -23,7 +23,7 @@ from docling.datamodel.pipeline_options import (
 )
 from docling_core.types.doc.document import TextItem, SectionHeaderItem, ListItem, TableItem, PictureItem
 from hierarchical.postprocessor import ResultPostprocessor
-from utils.logger import get_logger
+from lib.utils.logger import get_logger
 
 class DoclingExtractor:
     def __init__(

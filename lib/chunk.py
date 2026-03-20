@@ -13,7 +13,7 @@ from typing import Any
 
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
-from utils.logger import get_logger
+from lib.utils.logger import get_logger
 
 
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")

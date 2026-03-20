@@ -1,5 +1,5 @@
-from .extract import DoclingExtractor
-from .chunk import Chunker
+from ..extract import DoclingExtractor
+from ..chunk import Chunker
 from .logger import get_logger
 
 """Utils package for the document extraction and logging.

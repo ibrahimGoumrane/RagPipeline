@@ -1,6 +1,6 @@
 """Pipeline entrypoint that reuses the utils package extractor."""
 
-from utils import DoclingExtractor
+from lib import DoclingExtractor
 
 
 def main() -> None:
