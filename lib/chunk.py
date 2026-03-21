@@ -1,4 +1,8 @@
-"""Chunker — splits a DoclingDocument into parent + child chunks for RAG."""
+"""Chunker — splits a DoclingDocument into parent + child chunks for RAG.
+
+Parent = one per section header.
+Children = content chunks under that section, split by word budget.
+"""
 
 from __future__ import annotations
 
@@ -107,41 +111,59 @@ class Chunker:
         parents  : list[dict] = []
         children : list[dict] = []
         buf      = self._empty_buffer()
-        current_header = ""
+
+        # Seed a root parent for any content before the first header
+        current_parent = {
+            "parent_id":    str(uuid.uuid4()),
+            "doc_id":       self.doc_id,
+            "heading":      "[Document root]",
+            "page_no":      None,
+            "full_content": [],
+        }
+        parents.append(current_parent)
+        buf["parent_id"] = current_parent["parent_id"]
 
         for page_no, items in sorted(pages.items()):
-            parent_id       = str(uuid.uuid4())
-            page_text_lines : list[str] = []
-
-            if buf["parent_id"] is None:
-                buf["parent_id"] = parent_id
-                buf["page_no"]   = page_no
+            if current_parent["page_no"] is None:
+                current_parent["page_no"] = page_no  # set root parent page on first page
 
             for item in items:
-                page_text_lines.append(item["content"])
-                if not item["content"].strip():
+                content = item["content"]
+                if not content.strip():
                     continue
 
+                # ── New section header → new parent ───────────────────────────
                 if item["type"] == "header":
-                    current_header = item["content"]
-                    if buf["lines"]:               # flush on section change
-                        buf = self._flush(buf, children)
-                        buf["parent_id"] = parent_id
-                        buf["page_no"]   = page_no
+                    # flush whatever was buffered under the previous parent
+                    buf = self._flush(buf, children)
+
+                    current_parent = {
+                        "parent_id":    str(uuid.uuid4()),
+                        "doc_id":       self.doc_id,
+                        "heading":      content,
+                        "page_no":      page_no,
+                        "full_content": [],
+                    }
+                    parents.append(current_parent)
+
+                    buf["parent_id"] = current_parent["parent_id"]
+                    buf["page_no"]   = page_no
+                    buf["header"]    = content
                     continue
 
-                content    = item["content"]
+                # ── Accumulate content under current parent ───────────────────
+                current_parent["full_content"].append(content)
                 word_count = len(content.split())
 
                 # Flush if this item would push us over max_words
                 if self.max_words and buf["word_count"] + word_count > self.max_words and buf["lines"]:
                     buf = self._flush(buf, children)
-                    buf["parent_id"] = parent_id
+                    buf["parent_id"] = current_parent["parent_id"]
                     buf["page_no"]   = page_no
+                    buf["header"]    = current_parent["heading"]
 
-                if not buf["lines"]:               # register header on fresh buffer
-                    buf["header"]      = current_header
-                    buf["word_count"] += len(current_header.split()) if current_header else 0
+                if not buf["lines"]:
+                    buf["page_no"] = page_no
 
                 buf["lines"].append(content)
                 buf["word_count"] += word_count
@@ -149,19 +171,30 @@ class Chunker:
                 # Flush once min_words reached
                 if self.min_words and buf["word_count"] >= self.min_words:
                     buf = self._flush(buf, children)
-                    buf["parent_id"] = parent_id
+                    buf["parent_id"] = current_parent["parent_id"]
                     buf["page_no"]   = page_no
+                    buf["header"]    = current_parent["heading"]
 
-            parents.append({
-                "parent_id":    parent_id,
-                "doc_id":       self.doc_id,
-                "page_no":      page_no,
-                "full_content": "\n".join(page_text_lines),
-            })
+        # Flush any remaining buffer content
+        self._flush(buf, children)
 
-        self._flush(buf, children)  # flush remainder
-        self.logger.info("Chunking done — %d parents, %d children", len(parents), len(children))
-        return parents, children
+        # Serialise full_content from list to string and drop empty parents
+        parents_out = [
+            {
+                "parent_id":    p["parent_id"],
+                "doc_id":       p["doc_id"],
+                "heading":      p["heading"],
+                "page_no":      p["page_no"],
+                "full_content": "\n".join(p["full_content"]),
+            }
+            for p in parents
+            if p["full_content"]   # drop parents that had no content (bare headers)
+        ]
+
+        self.logger.info(
+            "Chunking done — %d parents, %d children", len(parents_out), len(children)
+        )
+        return parents_out, children
 
     # ── Output ────────────────────────────────────────────────────────────────
 
