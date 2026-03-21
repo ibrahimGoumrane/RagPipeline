@@ -50,6 +50,9 @@ async def amain() -> None:
             "use_hierarchical_headings": cfg.use_hierarchical_headings,
             "model_api_url": cfg.model_api_url,
             "model_api_model": cfg.model_api_model,
+            "description_api_url": cfg.description_api_url,
+            "description_api_key": cfg.description_api_key,
+            "description_api_model": cfg.description_api_model,
             "start_page": start,
             "end_page": end,
         }

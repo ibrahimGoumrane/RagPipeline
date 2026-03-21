@@ -50,10 +50,10 @@ class DoclingExtractor:
 
     def _pipeline_options(self) -> PdfPipelineOptions:
         options = PdfPipelineOptions()
-        options.do_ocr = True
+        options.do_ocr = False
         options.ocr_options.lang = ["fr", "en"]
         options.do_table_structure = True
-        options.generate_picture_images = True
+        options.generate_picture_images = False # Set to False to avoid having encoded base64 images in the chunks.
         options.do_picture_description = self.use_image_processor
         options.enable_remote_services = self.use_image_processor
 

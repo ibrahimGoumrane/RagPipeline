@@ -17,6 +17,7 @@ from docling_core.types.doc.document import (
 )
 
 from lib.models.main import ChunkRunOutput
+from lib.utils.llm_client import LLMClient
 from lib.utils.logger import get_logger
 
 
@@ -26,11 +27,23 @@ class Chunker:
         doc_id: str | None = None,
         max_words: int | None = None,
         min_words: int | None = None,
+        description_api_url: str | None = None,
+        description_api_key: str | None = None,
+        description_api_model: str | None = None,
     ):
         self.doc_id    = doc_id or "default-doc"
         self.max_words = max_words
         self.min_words = min_words
         self.logger    = get_logger(name="Chunker", log_level=logging.INFO)
+        self.description_client: LLMClient | None = None
+
+        if description_api_url and description_api_model:
+            self.description_client = LLMClient(
+                api_url=description_api_url,
+                api_key=description_api_key or "",
+                model=description_api_model,
+                timeout=90,
+            )
 
     # ── Buffer ────────────────────────────────────────────────────────────────
 
@@ -61,6 +74,44 @@ class Chunker:
 
     # ── Page content extraction ───────────────────────────────────────────────
 
+    def _picture_content(self, item: PictureItem, doc: DoclingDocument) -> str:
+        """Extract the richest available picture text (description preferred over plain caption)."""
+        md = item.export_to_markdown(doc=doc)
+        if isinstance(md, str) and md.strip():
+            cleaned = md.replace(
+                "<!-- 🖼️❌ Image not available. Please use `PdfPipelineOptions(generate_picture_images=True)` -->",
+                "",
+            ).strip()
+            if cleaned:
+                return cleaned
+        
+        caption = (
+            item.captions[0].text
+            if getattr(item, "captions", None)
+            else "Figure"
+        )
+        return f"Figure : {caption}"
+
+    def _table_content(self, item: TableItem, doc: DoclingDocument, page_no: int) -> str:
+        """Return table HTML with optional model-generated summary prepended."""
+        try:
+            html = item.export_to_html(doc=doc)
+        except Exception:
+            self.logger.warning("Table export failed on page %d", page_no)
+            return "Unparsed Table"
+
+        if not self.description_client:
+            return html
+
+        try:
+            summary = self.description_client.summarize_table(html)
+            if summary:
+                return f"Table summary: {summary}\n\n{html}"
+        except Exception as exc:
+            self.logger.warning("Table summary generation failed on page %d: %s", page_no, exc)
+
+        return html
+
     def _collect_pages(self, doc: DoclingDocument) -> dict[int, list[dict]]:
         """Walk the DoclingDocument and group items by page number."""
         pages: dict[int, list[dict]] = {}
@@ -82,20 +133,16 @@ class Chunker:
                     pages[page_no].append({"type": "text", "content": item.text})
 
                 elif isinstance(item, TableItem):
-                    try:
-                        html = item.export_to_html(doc=doc)
-                    except Exception:
-                        html = "Unparsed Table"
-                        self.logger.warning("Table export failed on page %d", page_no)
-                    pages[page_no].append({"type": "table", "content": html})
+                    pages[page_no].append({
+                        "type": "table",
+                        "content": self._table_content(item, doc, page_no),
+                    })
 
                 elif isinstance(item, PictureItem):
-                    caption = (
-                        item.captions[0].text
-                        if getattr(item, "captions", None)
-                        else "Figure"
-                    )
-                    pages[page_no].append({"type": "figure", "content": f"Figure : {caption}"})
+                    pages[page_no].append({
+                        "type": "figure",
+                        "content": self._picture_content(item, doc),
+                    })
 
             except Exception as exc:
                 self.logger.error("Item iteration error: %s", exc, exc_info=True)
@@ -123,7 +170,7 @@ class Chunker:
         parents.append(current_parent)
         buf["parent_id"] = current_parent["parent_id"]
 
-        for page_no, items in sorted(pages.items()):
+        for page_no, items in pages.items():
             if current_parent["page_no"] is None:
                 current_parent["page_no"] = page_no  # set root parent page on first page
 

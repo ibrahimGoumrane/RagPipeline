@@ -32,8 +32,6 @@ class LLMClient:
         payload = {
             "model": self.model,
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.0,
-            "max_tokens": 300,
         }
 
         response = requests.post(

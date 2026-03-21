@@ -43,8 +43,4 @@ class Dispatch:
             ),
             chunks=chunks,
         )
-    
-if __name__ == "__main__":    
-    dispatch = Dispatch("RFA2024-pages.pdf", num_workers=4)
-    result = dispatch.run()
-    print(result)    
+      
