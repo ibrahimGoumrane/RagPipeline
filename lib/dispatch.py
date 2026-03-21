@@ -6,7 +6,6 @@ Usage:
     dispatch = Dispatch("path/to/document.pdf", num_workers=4)
     result = dispatch.run()
 
-
 """
 
 from __future__ import annotations
@@ -15,32 +14,34 @@ import pymupdf
 from lib.models.main import DispatchRunOutput
 
 class Dispatch:
-    def __init__(self, pdf_path: str, num_workers: int, overlap_pages: int = 0):
+    def __init__(self, pdf_path: str, num_workers: int):
         self.pdf_path = pdf_path
         self.num_workers = num_workers
-        self.overlap_pages = overlap_pages
 
 
-    def _page_ranges(self) -> list[tuple[int, int]]:
+    def _page_chunks(self) -> list[tuple[int, int]]:
         doc = pymupdf.open(self.pdf_path)
         n   = doc.page_count
         doc.close()
 
         size   = (n + self.num_workers - 1) // self.num_workers
-        ranges: list[tuple[int, int]] = []
-        for i in range(0, n, size):
-            start = max(i - self.overlap_pages, 0)
-            end = min(i + size, n)
-            ranges.append((start, end))
+        chunks: list[tuple[int, int]] = []
+        # Build simple non-overlapping ranges.
+        for i in range(1, n + 1, size):
+            start = i
+            end = min(i + size - 1, n)
+            chunks.append((start, end))
 
-        return ranges
+        return chunks
 
     def run(self) -> DispatchRunOutput:
-        ranges = self._page_ranges()
+        chunks = self._page_chunks()
         return DispatchRunOutput(
             status="success",
-            message=f"Dispatched {len(ranges)} chunks (overlap_pages={self.overlap_pages})",
-            chunks=ranges,
+            message=(
+                f"Dispatched {len(chunks)} chunks"
+            ),
+            chunks=chunks,
         )
     
 if __name__ == "__main__":    
