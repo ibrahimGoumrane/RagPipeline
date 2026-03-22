@@ -41,21 +41,32 @@ uv sync
 uv run python pipeline.py
 ```
 
+Class-based module entrypoint:
+
+```python
+from lib import ChunkingPipeline
+from lib.config import get_config
+
+ChunkingPipeline(config=get_config()).run()
+```
+
 ## Environment variables
 
 Configure runtime values in `.env`:
 
 - `PDF_PATH`: Input PDF path.
-- `OUTPUT_DIR`: Output directory (default: `output/docling`).
+- `OUTPUT_DIR`: Output directory (default: `output`).
+- `NUM_WORKERS`: Number of process workers used for dispatch/work stages.
 - `USE_IMAGE_PROCESSOR`: Enable image/figure description calls.
 - `MODEL_API_URL`: API endpoint for your model provider.
 - `MODEL_API_MODEL`: Model name used by your provider.
 - `API_KEY`: API key for remote model calls.
-- `USE_HIERARCHICAL_HEADINGS`: Enable heading hierarchy postprocessing.
+- `ACCELERATOR_DEVICE`: Docling accelerator device (`AUTO`, `CPU`, `MPS`, `CUDA`, `XPU`).
+- `ACCELERATOR_NUM_THREADS`: Thread count used by Docling accelerator options.
 
 ## Output
 
-Current output is written under `output/docling/`.
+Current output is written under `output/`.
 
 Primary artifact:
 

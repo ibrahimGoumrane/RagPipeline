@@ -1,4 +1,5 @@
 # PDF Ingestion — Parallel Worker Strategy
+
 ---
 
 ## What we are building
@@ -90,6 +91,26 @@ and returns a job ID immediately.
 
 ---
 
+## Accelerator options
+
+Docling extraction can be run with explicit accelerator settings per worker.
+
+- `ACCELERATOR_DEVICE`: `AUTO`, `CPU`, `MPS`, `CUDA`, or `XPU`
+- `ACCELERATOR_NUM_THREADS`: Number of worker threads for accelerator execution
+
+These values are passed into `PdfPipelineOptions.accelerator_options` via:
+
+```python
+AcceleratorOptions(num_threads=8, device=AcceleratorDevice.CPU)
+```
+
+Notes:
+
+- `CUDA` and `XPU` require compatible hardware and runtime.
+- `CPU` mode works everywhere.
+
+---
+
 ## Design rules
 
 | DO                                                          | DON'T                                                       |
@@ -101,3 +122,5 @@ and returns a job ID immediately.
 | Each worker writes to its own tmp file (no write conflicts) | No framework coupling in the utility layer                  |
 
 ---
+
+Runtime progress is emitted through the project logger rather than `print` statements.

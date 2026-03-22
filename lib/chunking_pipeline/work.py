@@ -3,9 +3,10 @@
 from pathlib import Path
 import uuid
 
-from lib.chunk import Chunker
-from lib.extract import DoclingExtractor
 from lib.models.main import WorkRunOutput
+
+from .chunk import Chunker
+from .extract import DoclingExtractor
 
 
 class Work:
@@ -18,9 +19,10 @@ class Work:
         max_words_per_chunk: int | None,
         min_words_per_chunk: int | None,
         use_image_processor: bool,
-        use_hierarchical_headings: bool,
         model_api_url: str | None,
         model_api_model: str | None,
+        accelerator_device: str | None,
+        accelerator_num_threads: int | None,
         description_api_url: str | None,
         description_api_key: str | None,
         description_api_model: str | None,
@@ -34,9 +36,10 @@ class Work:
         self.max_words_per_chunk = max_words_per_chunk
         self.min_words_per_chunk = min_words_per_chunk
         self.use_image_processor = use_image_processor
-        self.use_hierarchical_headings = use_hierarchical_headings
         self.model_api_url = model_api_url
         self.model_api_model = model_api_model
+        self.accelerator_device = accelerator_device
+        self.accelerator_num_threads = accelerator_num_threads
         self.description_api_url = description_api_url
         self.description_api_key = description_api_key
         self.description_api_model = description_api_model
@@ -52,9 +55,10 @@ class Work:
             start_page=self.start_page,
             end_page=self.end_page,
             use_image_processor=self.use_image_processor,
-            use_hierarchical_headings=self.use_hierarchical_headings,
             model_api_url=self.model_api_url,
             model_api_model=self.model_api_model,
+            accelerator_device=self.accelerator_device,
+            accelerator_num_threads=self.accelerator_num_threads,
         )
         extract_result = extractor.run()
 
@@ -67,10 +71,7 @@ class Work:
             description_api_model=self.description_api_model,
         )
 
-        chunk_result = chunker.run_to_output(
-            document=extract_result.document,
-            output_dir=str(worker_output_dir),
-        )
+        chunk_result = chunker.run(document=extract_result.document, output_dir=str(worker_output_dir))
 
         return WorkRunOutput(
             worker_id=self.worker_id,

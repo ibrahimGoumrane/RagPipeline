@@ -1,11 +1,7 @@
 """Core library package for extraction and chunking."""
 
-from .extract import DoclingExtractor
-from .chunk import Chunker
-from .dispatch import Dispatch
-from .work import Work
-from .merge import Merge
-from .config import cfg
+from .chunking_pipeline import ChunkingPipeline
+from .config import get_config
 
 
-__all__ = ["DoclingExtractor", "Chunker", "Dispatch", "Work", "Merge", "cfg"]
+__all__ = ["ChunkingPipeline", "get_config"]

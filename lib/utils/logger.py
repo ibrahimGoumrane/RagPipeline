@@ -1,11 +1,11 @@
 import logging
 import os
-from datetime import datetime
 
 class Logger:
-    def __init__(self, name='CodeurScraper', log_level=logging.DEBUG):
+    def __init__(self, name='RAGPIPELINE', log_level=logging.DEBUG, log_file_name: str = 'scraper.log'):
         self.name = name
         self.log_level = log_level
+        self.log_file_name = log_file_name
         self.logger = None
         self._setup_logger()
     
@@ -24,7 +24,7 @@ class Logger:
             self.logger.handlers.clear()
         
         # Create file handler (single log file)
-        log_file = os.path.join(logs_dir, 'scraper.log')
+        log_file = os.path.join(logs_dir, self.log_file_name)
         file_handler = logging.FileHandler(log_file, mode='a', encoding='utf-8')
         file_handler.setLevel(logging.DEBUG)
         
@@ -69,7 +69,7 @@ class Logger:
         """Log critical message"""
         self.logger.critical(message)
 
-def get_logger(name='CodeurScraper', log_level=logging.DEBUG):
+def get_logger(name='RAGPIPELINE', log_level=logging.DEBUG, log_file_name: str = 'scraper.log'):
     """Convenience function to get a configured logger"""
-    logger_instance = Logger(name, log_level)
+    logger_instance = Logger(name, log_level, log_file_name=log_file_name)
     return logger_instance.get_logger()
