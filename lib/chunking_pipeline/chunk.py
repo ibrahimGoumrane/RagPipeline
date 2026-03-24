@@ -117,42 +117,42 @@ class Chunker:
     # Element-level serialisers
     # ------------------------------------------------------------------
 
-    def _picture_text(self, item: PictureItem, doc: DoclingDocument) -> str:
-        """Serialise a picture to Markdown, falling back to its caption text."""
-        md = item.export_to_markdown(doc=doc)
-        if isinstance(md, str):
-            cleaned = md.replace(_BROKEN_IMAGE_PLACEHOLDER, "").strip()
-            if cleaned:
-                return cleaned
+    # def _picture_text(self, item: PictureItem, doc: DoclingDocument) -> str:
+    #     """Serialise a picture to Markdown, falling back to its caption text."""
+    #     md = item.export_to_markdown(doc=doc)
+    #     if isinstance(md, str):
+    #         cleaned = md.replace(_BROKEN_IMAGE_PLACEHOLDER, "").strip()
+    #         if cleaned:
+    #             return cleaned
 
-        # Fallback: resolve the first caption ref to its text
-        if getattr(item, "captions", None):
-            cap = item.captions[0].resolve(doc)
-            cap_text = getattr(cap, "text", "") or ""
-            if cap_text.strip():
-                return f"Figure: {cap_text.strip()}"
+    #     # Fallback: resolve the first caption ref to its text
+    #     if getattr(item, "captions", None):
+    #         cap = item.captions[0].resolve(doc)
+    #         cap_text = getattr(cap, "text", "") or ""
+    #         if cap_text.strip():
+    #             return f"Figure: {cap_text.strip()}"
 
-        return "Figure: (no caption)"
+    #     return "Figure: (no caption)"
 
-    def _table_text(self, item: TableItem, doc: DoclingDocument, page_no: int) -> str:
-        """Export a table to HTML, optionally prefixed with an LLM summary."""
-        try:
-            html = item.export_to_html(doc=doc)
-        except Exception:
-            self.logger.warning("Table export failed on page %d", page_no)
-            return "Unparsed Table"
+    # def _table_text(self, item: TableItem, doc: DoclingDocument, page_no: int) -> str:
+    #     """Export a table to HTML, optionally prefixed with an LLM summary."""
+    #     try:
+    #         html = item.export_to_html(doc=doc)
+    #     except Exception:
+    #         self.logger.warning("Table export failed on page %d", page_no)
+    #         return "Unparsed Table"
 
-        if not self.description_client:
-            return html
+    #     if not self.description_client:
+    #         return html
 
-        try:
-            summary = self.description_client.summarize_table(html)
-            if summary:
-                return f"Table summary: {summary}\n\n{html}"
-        except Exception as exc:
-            self.logger.warning("Table summary failed on page %d: %s", page_no, exc)
+    #     try:
+    #         summary = self.description_client.summarize_table(html)
+    #         if summary:
+    #             return f"Table summary: {summary}\n\n{html}"
+    #     except Exception as exc:
+    #         self.logger.warning("Table summary failed on page %d: %s", page_no, exc)
 
-        return html
+    #     return html
 
     # ------------------------------------------------------------------
     # Core chunking pipeline
@@ -164,6 +164,8 @@ class Chunker:
         children: list[dict[str, Any]] = []
 
         for chunk in chunker.chunk(dl_doc=doc):
+            
+            # Contextualise the chunk's text content and skip if empty after stripping
             content = chunker.contextualize(chunk).strip()
             if not content:
                 continue
