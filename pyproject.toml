@@ -8,6 +8,7 @@ dependencies = [
     "python-dotenv>=1.0.1",
     "pydantic>=2.11.0",
     "docling>=2.80.0",
+    "transformers>=4.46.0",
     "torch>=2.4.0",
     "requests>=2.32.2",
     "pymupdf>=1.27.2",

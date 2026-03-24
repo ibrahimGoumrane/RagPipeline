@@ -46,8 +46,8 @@ This document summarizes the chunking logic implemented in utils/chunk.py.
 - OUTPUT_DIR
 - DOC_ID
 - MAX_WORDS_PER_CHUNK
+- TOKENIZER_MODEL
 - OVERLAP_SENTENCES
-- MIN_WORDS_PER_CHUNK
 
 ## Logging
 

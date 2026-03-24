@@ -56,7 +56,7 @@ class ChunkingPipeline:
                     "output_dir": self.cfg.output_dir,
                     "doc_id": self.cfg.doc_id,
                     "max_words_per_chunk": self.cfg.max_words_per_chunk,
-                    "min_words_per_chunk": self.cfg.min_words_per_chunk,
+                    "tokenizer_model": self.cfg.tokenizer_model,
                     "use_image_processor": self.cfg.use_image_processor,
                     "model_api_url": self.cfg.model_api_url,
                     "model_api_model": self.cfg.model_api_model,

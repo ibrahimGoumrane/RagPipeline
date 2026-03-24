@@ -63,7 +63,6 @@ class DoclingExtractor:
         options.generate_picture_images = False
         options.do_picture_description = self.use_image_processor
         options.enable_remote_services = self.use_image_processor
-
         if self.use_image_processor:
             options.picture_description_options = PictureDescriptionApiOptions(
                 url=self.model_api_url,

@@ -17,7 +17,7 @@ class Work:
         output_dir: str,
         doc_id: str,
         max_words_per_chunk: int | None,
-        min_words_per_chunk: int | None,
+        tokenizer_model: str | None,
         use_image_processor: bool,
         model_api_url: str | None,
         model_api_model: str | None,
@@ -34,7 +34,7 @@ class Work:
         self.output_dir = output_dir
         self.doc_id = doc_id
         self.max_words_per_chunk = max_words_per_chunk
-        self.min_words_per_chunk = min_words_per_chunk
+        self.tokenizer_model = tokenizer_model
         self.use_image_processor = use_image_processor
         self.model_api_url = model_api_url
         self.model_api_model = model_api_model
@@ -65,7 +65,7 @@ class Work:
         chunker = Chunker(
             doc_id=self.doc_id,
             max_words=self.max_words_per_chunk,
-            min_words=self.min_words_per_chunk,
+            tokenizer_model=self.tokenizer_model,
             description_api_url=self.description_api_url,
             description_api_key=self.description_api_key,
             description_api_model=self.description_api_model,

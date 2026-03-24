@@ -1,7 +1,15 @@
 """Chunker — splits a DoclingDocument into parent + child chunks for RAG.
 
-Parent = one per section header.
-Children = content chunks under that section, split by word budget.
+Strategy (two-tier):
+  Parent  — one record per unique section heading; holds the full concatenated
+             text of all children beneath it.  Used for context re-ranking.
+  Child   — token-bounded content chunks produced by HybridChunker + contextualised
+             by their heading.  These are what gets embedded and vector-searched.
+
+Supported element types injected into children:
+  • Text / SectionHeader  — via HybridChunker directly
+  • Table                 — exported to HTML; optionally summarised by an LLM
+  • Picture               — exported to Markdown (base64 or placeholder)
 """
 
 from __future__ import annotations
@@ -12,77 +20,122 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from docling_core.types.doc.document import (
-    DoclingDocument, PictureItem, SectionHeaderItem, TableItem, TextItem,
-)
+from docling.chunking import HybridChunker
+from docling_core.transforms.chunker.tokenizer.huggingface import HuggingFaceTokenizer
+from docling_core.types.doc.document import DoclingDocument, PictureItem, TableItem
+from transformers import AutoTokenizer
 
 from lib.models.main import ChunkRunOutput
 from lib.utils.llm_client import LLMClient
 from lib.utils.logger import get_logger
 
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+_DEFAULT_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+_DEFAULT_MAX_TOKENS = 512
+_BROKEN_IMAGE_PLACEHOLDER = (
+    "<!-- 🖼️❌ Image not available. "
+    "Please use `PdfPipelineOptions(generate_picture_images=True)` -->"
+)
+
+
+# ---------------------------------------------------------------------------
+# Chunker
+# ---------------------------------------------------------------------------
 
 class Chunker:
+    """Convert a :class:`DoclingDocument` into parent/child chunk pairs.
+
+    Args:
+        doc_id: Identifier attached to every chunk for downstream filtering.
+        max_words: Token budget passed to :class:`HybridChunker`.
+                   Defaults to ``512``.
+        tokenizer_model: Hugging Face tokenizer id used by HybridChunker.
+                         Defaults to ``sentence-transformers/all-MiniLM-L6-v2``.
+        description_api_url: Base URL of an LLM used to summarise tables.
+                             When omitted tables are stored as raw HTML.
+        description_api_key: Bearer token for the description LLM.
+        description_api_model: Model name for the description LLM.
+    """
+
     def __init__(
         self,
         doc_id: str | None = None,
         max_words: int | None = None,
-        min_words: int | None = None,
+        tokenizer_model: str | None = None,
         description_api_url: str | None = None,
         description_api_key: str | None = None,
         description_api_model: str | None = None,
-    ):
+    ) -> None:
         self.doc_id = doc_id or "default-doc"
-        self.max_words = max_words
-        self.min_words = min_words
+        self.max_words = max_words or _DEFAULT_MAX_TOKENS
+        self.tokenizer_model = tokenizer_model or _DEFAULT_MODEL
         self.logger = get_logger(name="Chunker", log_level=logging.INFO)
-        self.description_client: LLMClient | None = None
 
-        if description_api_url and description_api_model:
-            self.description_client = LLMClient(
+        # Optional LLM client for table summarisation
+        self.description_client: LLMClient | None = (
+            LLMClient(
                 api_url=description_api_url,
                 api_key=description_api_key or "",
                 model=description_api_model,
                 timeout=90,
             )
+            if description_api_url and description_api_model
+            else None
+        )
 
-    def _empty_buffer(self) -> dict[str, Any]:
-        return {"lines": [], "word_count": 0, "parent_id": None, "page_no": None, "header": None}
+    # ------------------------------------------------------------------
+    # HybridChunker helpers
+    # ------------------------------------------------------------------
 
-    def _flush(self, buf: dict, children: list) -> dict:
-        if buf["lines"] and buf["parent_id"] is not None:
-            text = "\n\n".join(buf["lines"])
-            if buf["header"]:
-                text = f"{buf['header']}\n{text}"
-            children.append(self._child(buf["parent_id"], buf["page_no"], text))
-        return self._empty_buffer()
+    def _build_chunker(self) -> HybridChunker:
+        """Instantiate a token-aware :class:`HybridChunker`."""
+        tokenizer = HuggingFaceTokenizer(
+            tokenizer=AutoTokenizer.from_pretrained(self.tokenizer_model),
+            max_tokens=self.max_words,
+        )
+        return HybridChunker(tokenizer=tokenizer, merge_peers=True)
 
-    def _child(self, parent_id: str, page_no: int, content: str) -> dict[str, Any]:
-        content = content.strip()
-        return {
-            "chunk_id": str(uuid.uuid4()),
-            "parent_id": parent_id,
-            "element_type": "text",
-            "page_ref": page_no,
-            "doc_id": self.doc_id,
-            "content": content,
-            "content_for_embedding": f"Page: {page_no}\n{content}",
-            "token_estimate": len(content.split()),
-        }
+    @staticmethod
+    def _chunk_page_no(chunk: Any) -> int | None:
+        """Return the first page number referenced by *chunk*, or ``None``."""
+        for item in getattr(getattr(chunk, "meta", None), "doc_items", None) or []:
+            prov = getattr(item, "prov", None)
+            if prov and getattr(prov[0], "page_no", None) is not None:
+                return int(prov[0].page_no)
+        return None
 
-    def _picture_content(self, item: PictureItem, doc: DoclingDocument) -> str:
+    @staticmethod
+    def _chunk_heading(chunk: Any) -> str:
+        """Return the deepest heading in *chunk*'s metadata, or a sentinel."""
+        headings = getattr(getattr(chunk, "meta", None), "headings", None) or []
+        return str(headings[-1]).strip() if headings else "[Document root]"
+
+    # ------------------------------------------------------------------
+    # Element-level serialisers
+    # ------------------------------------------------------------------
+
+    def _picture_text(self, item: PictureItem, doc: DoclingDocument) -> str:
+        """Serialise a picture to Markdown, falling back to its caption text."""
         md = item.export_to_markdown(doc=doc)
-        if isinstance(md, str) and md.strip():
-            cleaned = md.replace(
-                "<!-- 🖼️❌ Image not available. Please use `PdfPipelineOptions(generate_picture_images=True)` -->",
-                "",
-            ).strip()
+        if isinstance(md, str):
+            cleaned = md.replace(_BROKEN_IMAGE_PLACEHOLDER, "").strip()
             if cleaned:
                 return cleaned
 
-        caption = item.captions[0].text if getattr(item, "captions", None) else "Figure"
-        return f"Figure : {caption}"
+        # Fallback: resolve the first caption ref to its text
+        if getattr(item, "captions", None):
+            cap = item.captions[0].resolve(doc)
+            cap_text = getattr(cap, "text", "") or ""
+            if cap_text.strip():
+                return f"Figure: {cap_text.strip()}"
 
-    def _table_content(self, item: TableItem, doc: DoclingDocument, page_no: int) -> str:
+        return "Figure: (no caption)"
+
+    def _table_text(self, item: TableItem, doc: DoclingDocument, page_no: int) -> str:
+        """Export a table to HTML, optionally prefixed with an LLM summary."""
         try:
             html = item.export_to_html(doc=doc)
         except Exception:
@@ -97,128 +150,111 @@ class Chunker:
             if summary:
                 return f"Table summary: {summary}\n\n{html}"
         except Exception as exc:
-            self.logger.warning("Table summary generation failed on page %d: %s", page_no, exc)
+            self.logger.warning("Table summary failed on page %d: %s", page_no, exc)
 
         return html
 
-    def _collect_pages(self, doc: DoclingDocument) -> dict[int, list[dict]]:
-        pages: dict[int, list[dict]] = {}
+    # ------------------------------------------------------------------
+    # Core chunking pipeline
+    # ------------------------------------------------------------------
 
-        for item, _ in doc.iterate_items():
-            try:
-                page_no = item.prov[0].page_no if getattr(item, "prov", None) else None
-                if page_no is None:
-                    self.logger.warning("No page number for '%s' — skipped", type(item).__name__)
-                    continue
+    def _build_children(self, doc: DoclingDocument) -> list[dict[str, Any]]:
+        """Run HybridChunker and return a list of child chunk dicts."""
+        chunker = self._build_chunker()
+        children: list[dict[str, Any]] = []
 
-                if page_no not in pages:
-                    pages[page_no] = []
+        for chunk in chunker.chunk(dl_doc=doc):
+            content = chunker.contextualize(chunk).strip()
+            if not content:
+                continue
 
-                if isinstance(item, SectionHeaderItem):
-                    pages[page_no].append({"type": "header", "content": item.text})
-                elif isinstance(item, TextItem):
-                    pages[page_no].append({"type": "text", "content": item.text})
-                elif isinstance(item, TableItem):
-                    pages[page_no].append({
-                        "type": "table",
-                        "content": self._table_content(item, doc, page_no),
-                    })
-                elif isinstance(item, PictureItem):
-                    pages[page_no].append({
-                        "type": "figure",
-                        "content": self._picture_content(item, doc),
-                    })
+            children.append({
+                "chunk_id": str(uuid.uuid4()),
+                # Temporary key used by _build_parents; removed afterwards
+                "_heading": self._chunk_heading(chunk),
+                "element_type": "text",
+                "page_ref": self._chunk_page_no(chunk),
+                "doc_id": self.doc_id,
+                "content": content,
+                "content_for_embedding": content,
+                "token_estimate": len(content.split()),
+            })
 
-            except Exception as exc:
-                self.logger.error("Item iteration error: %s", exc, exc_info=True)
+        self.logger.info("HybridChunker produced %d children", len(children))
+        return children
 
-        return pages
+    def _build_parents(
+        self, children: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Group children by heading to produce parent records.
 
-    def _chunk_document(self, doc: DoclingDocument) -> tuple[list[dict], list[dict]]:
-        pages = self._collect_pages(doc)
-        parents: list[dict] = []
-        children: list[dict] = []
-        buf = self._empty_buffer()
+        Mutates each child dict in-place: replaces ``_heading`` with
+        ``parent_id``.
 
-        current_parent = {
-            "parent_id": str(uuid.uuid4()),
-            "doc_id": self.doc_id,
-            "heading": "[Document root]",
-            "page_no": None,
-            "full_content": [],
-        }
-        parents.append(current_parent)
-        buf["parent_id"] = current_parent["parent_id"]
+        Returns:
+            ``(parents, children)`` — both lists are ready to serialise.
+        """
+        grouped: dict[str, dict[str, Any]] = {}
+        order: list[str] = []
 
-        for page_no, items in pages.items():
-            if current_parent["page_no"] is None:
-                current_parent["page_no"] = page_no
+        for child in children:
+            heading = child.pop("_heading", "[Document root]")
 
-            for item in items:
-                content = item["content"]
-                if not content.strip():
-                    continue
+            if heading not in grouped:
+                grouped[heading] = {
+                    "parent_id": str(uuid.uuid4()),
+                    "doc_id": self.doc_id,
+                    "heading": heading,
+                    "page_no": child.get("page_ref"),
+                    "full_content": [],
+                }
+                order.append(heading)
 
-                if item["type"] == "header":
-                    buf = self._flush(buf, children)
-                    current_parent = {
-                        "parent_id": str(uuid.uuid4()),
-                        "doc_id": self.doc_id,
-                        "heading": content,
-                        "page_no": page_no,
-                        "full_content": [],
-                    }
-                    parents.append(current_parent)
-                    buf["parent_id"] = current_parent["parent_id"]
-                    buf["page_no"] = page_no
-                    buf["header"] = content
-                    continue
+            parent = grouped[heading]
+            # Use the first page encountered for this heading
+            if parent["page_no"] is None:
+                parent["page_no"] = child.get("page_ref")
 
-                current_parent["full_content"].append(content)
-                word_count = len(content.split())
+            parent["full_content"].append(child["content"])
+            child["parent_id"] = parent["parent_id"]
 
-                if self.max_words and buf["word_count"] + word_count > self.max_words and buf["lines"]:
-                    buf = self._flush(buf, children)
-                    buf["parent_id"] = current_parent["parent_id"]
-                    buf["page_no"] = page_no
-                    buf["header"] = current_parent["heading"]
-
-                if not buf["lines"]:
-                    buf["page_no"] = page_no
-
-                buf["lines"].append(content)
-                buf["word_count"] += word_count
-
-                if self.min_words and buf["word_count"] >= self.min_words:
-                    buf = self._flush(buf, children)
-                    buf["parent_id"] = current_parent["parent_id"]
-                    buf["page_no"] = page_no
-                    buf["header"] = current_parent["heading"]
-
-        self._flush(buf, children)
-
-        parents_out = [
+        parents = [
             {
-                "parent_id": p["parent_id"],
-                "doc_id": p["doc_id"],
-                "heading": p["heading"],
-                "page_no": p["page_no"],
-                "full_content": "\n".join(p["full_content"]),
+                **{k: v for k, v in grouped[h].items() if k != "full_content"},
+                "full_content": "\n".join(grouped[h]["full_content"]),
             }
-            for p in parents
-            if p["full_content"]
+            for h in order
+            if grouped[h]["full_content"]
         ]
 
-        self.logger.info("Chunking done — %d parents, %d children", len(parents_out), len(children))
-        return parents_out, children
+        return parents, children
 
-    def _write_output(self, out_dir: Path, parents: list[dict], children: list[dict]) -> ChunkRunOutput:
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
+
+    def run(self, document: DoclingDocument, output_dir: str | None = None) -> ChunkRunOutput:
+        """Chunk *document* and write JSON outputs to *output_dir*.
+
+        Args:
+            document:   Parsed :class:`DoclingDocument` to chunk.
+            output_dir: Root directory for outputs.  A ``chunks/`` sub-folder
+                        is created automatically.  Defaults to ``output/``.
+
+        Returns:
+            :class:`ChunkRunOutput` with in-memory chunk lists and file paths.
+        """
+        out_dir = Path(output_dir or "output") / "chunks"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        children = self._build_children(document)
+        parents, children = self._build_parents(children)
+        self.logger.info("Chunking complete — %d parents, %d children", len(parents), len(children))
+
         vector_path = out_dir / "chunks_vector.json"
         parent_path = out_dir / "chunks_parent.json"
-
         vector_path.write_text(json.dumps(children, ensure_ascii=False, indent=2), encoding="utf-8")
         parent_path.write_text(json.dumps(parents, ensure_ascii=False, indent=2), encoding="utf-8")
-
         self.logger.info("Outputs written to %s", out_dir)
 
         return ChunkRunOutput(
@@ -227,9 +263,3 @@ class Chunker:
             chunks_vector_path=str(vector_path),
             chunks_parent_path=str(parent_path),
         )
-
-    def run(self, document: DoclingDocument, output_dir: str | None = None) -> ChunkRunOutput:
-        out_dir = Path(output_dir) / "chunks" if output_dir else Path("output/chunks")
-        out_dir.mkdir(parents=True, exist_ok=True)
-        parents, children = self._chunk_document(document)
-        return self._write_output(out_dir=out_dir, parents=parents, children=children)

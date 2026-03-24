@@ -27,8 +27,8 @@ class Config:
     md_input_path: Path
     doc_id: str
     num_workers: int
-    min_words_per_chunk: int
     max_words_per_chunk: int
+    tokenizer_model: str
 
     # Extractor
     pdf_path: str
@@ -50,8 +50,8 @@ cfg = Config(
     md_input_path            = Path(os.getenv("MD_INPUT_PATH", "output/full_document.md")),
     doc_id                   = os.getenv("DOC_ID", "document_001"),
     num_workers              = int(os.getenv("NUM_WORKERS", "4")),
-    min_words_per_chunk      = int(os.getenv("MIN_WORDS_PER_CHUNK", "200")),
     max_words_per_chunk      = int(os.getenv("MAX_WORDS_PER_CHUNK", "400")),
+    tokenizer_model          = os.getenv("TOKENIZER_MODEL", "sentence-transformers/all-MiniLM-L6-v2"),
     use_image_processor      = os.getenv("USE_IMAGE_PROCESSOR", "true").lower() == "true",
     model_api_url            = os.getenv("MODEL_API_URL", ""),
     model_api_model          = os.getenv("MODEL_API_MODEL", ""),
