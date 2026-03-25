@@ -27,6 +27,7 @@ class DoclingExtractor:
         use_image_processor: bool | None = None,
         model_api_url: str | None = None,
         model_api_model: str | None = None,
+        model_api_key: str | None = None,
     ):
         self.pdf_path = pdf_path
         self.output_dir = Path(output_dir)
@@ -37,6 +38,7 @@ class DoclingExtractor:
         self.use_image_processor = use_image_processor
         self.model_api_url = model_api_url
         self.model_api_model = model_api_model
+        self.model_api_key = model_api_key or os.getenv("API_KEY", "")
         self.logger = get_logger(name="DoclingExtractor", log_level=logging.INFO)
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -64,17 +66,22 @@ class DoclingExtractor:
         options.do_picture_description = self.use_image_processor
         options.enable_remote_services = self.use_image_processor
         if self.use_image_processor:
+            if not self.model_api_url:
+                raise ValueError("MODEL_API_URL is required when image processor is enabled")
+            if not self.model_api_model:
+                raise ValueError("MODEL_API_MODEL is required when image processor is enabled")
             options.picture_description_options = PictureDescriptionApiOptions(
                 url=self.model_api_url,
                 params={"model": self.model_api_model, "temperature": 0.0},
-                headers={"Authorization": f"Bearer {os.getenv('API_KEY', '')}"},
+                headers={"Authorization": f"Bearer {self.model_api_key}"},
+        
                 prompt=(
-                    "You are analyzing a figure from a French report. "
-                    "If the figure contains explicit numeric values (table or grid), "
-                    "convert it to HTML using <table>, <tr>, <th>, <td>. "
-                    "For multiple distinct data regions output multiple HTML tables. "
-                    "If the figure is a chart without precise point labels, "
-                    "explain what it shows inside a <chart>...</chart> tag."
+                    "Reponds en francais, concis et professionnel. "
+                    "Donne uniquement le resultat final, sans explication. "
+                    "Si valeurs numeriques explicites: produis un ou plusieurs tableaux HTML "
+                    "avec seulement <table>, <tr>, <th>, <td>. "
+                    "Sinon: reponds dans <chart>...</chart>. "
+                    "Pas de markdown, pas de texte hors le contenu de image."
                 ),
                 timeout=300,
             )

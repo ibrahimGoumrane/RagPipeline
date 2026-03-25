@@ -60,6 +60,7 @@ class ChunkingPipeline:
                     "use_image_processor": self.cfg.use_image_processor,
                     "model_api_url": self.cfg.model_api_url,
                     "model_api_model": self.cfg.model_api_model,
+                    "model_api_key": self.cfg.api_key,
                     "accelerator_device": self.cfg.accelerator_device,
                     "accelerator_num_threads": self.cfg.accelerator_num_threads,
                     "description_api_url": self.cfg.description_api_url,

@@ -6,9 +6,13 @@ import requests
 
 
 class LLMClient:
-    """Small reusable HTTP client for text generation APIs."""
+    """Qwen/OpenAI-compatible HTTP client for text generation APIs."""
 
     def __init__(self, api_url: str, api_key: str, model: str, timeout: int = 60):
+        if not api_url:
+            raise ValueError("Qwen API URL is required")
+        if not model:
+            raise ValueError("Qwen model name is required")
         self.api_url = api_url
         self.api_key = api_key
         self.model = model
@@ -16,10 +20,11 @@ class LLMClient:
 
     def summarize_table(self, html_table: str) -> str:
         prompt = (
-            "You are a financial analysis assistant. "
-            "Given the HTML table below, write a short 2-3 sentence summary of the main trends, "
-            "notable values, and important comparisons. "
-            "Return only the summary text.\\n\\n"
+            "Tu es un assistant d'analyse financiere. "
+            "Reponds toujours en francais, avec un ton professionnel et concis. "
+            "A partir du tableau HTML ci-dessous, redige un resume court (2-3 phrases) "
+            "des tendances principales, des valeurs notables et des comparaisons importantes. "
+            "Retourne uniquement le texte final du resume, sans preambule ni commentaire hors sujet.\\n\\n"
             f"Table:\\n{html_table}"
         )
         return self.generate_text(prompt)
@@ -31,7 +36,19 @@ class LLMClient:
 
         payload = {
             "model": self.model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Reponds toujours en francais, de maniere concise et professionnelle. "
+                        "Donne uniquement le contenu final utile. "
+                        "N'ajoute pas d'analyse interne, de justification, de meta-commentaire, "
+                        "ni d'information non liee au contenu."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.0,
         }
 
         response = requests.post(
@@ -47,11 +64,7 @@ class LLMClient:
         if text:
             return text
 
-        text = self._parse_gemini_native(data)
-        if text:
-            return text
-
-        raise ValueError("Unsupported response payload format from description API")
+        raise ValueError("Unsupported Qwen/OpenAI response payload format")
 
     @staticmethod
     def _parse_openai_style(data: dict[str, Any]) -> str:
@@ -67,23 +80,10 @@ class LLMClient:
         if isinstance(content, list):
             parts: list[str] = []
             for block in content:
-                if isinstance(block, dict) and isinstance(block.get("text"), str):
-                    parts.append(block["text"])
+                if isinstance(block, dict):
+                    text = block.get("text")
+                    if isinstance(text, str):
+                        parts.append(text)
             return "\n".join(parts).strip()
 
         return ""
-
-    @staticmethod
-    def _parse_gemini_native(data: dict[str, Any]) -> str:
-        candidates = data.get("candidates") or []
-        if not candidates:
-            return ""
-
-        content = candidates[0].get("content") or {}
-        parts = content.get("parts") or []
-
-        texts: list[str] = []
-        for part in parts:
-            if isinstance(part, dict) and isinstance(part.get("text"), str):
-                texts.append(part["text"])
-        return "\n".join(texts).strip()

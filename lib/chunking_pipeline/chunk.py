@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from pathlib import Path
 from typing import Any
@@ -99,6 +100,35 @@ class Chunker:
         return HybridChunker(tokenizer=tokenizer, merge_peers=True)
 
     @staticmethod
+    def _strip_reasoning_artifacts(text: str) -> str:
+        """Remove common LLM reasoning traces before persisting embeddings."""
+        cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.IGNORECASE | re.DOTALL)
+
+        filtered_lines: list[str] = []
+        banned_prefixes = (
+            "the user wants me",
+            "the user's instructions say",
+            "i will ",
+            "i'll ",
+            "let's ",
+            "since these are",
+        )
+        for line in cleaned.splitlines():
+            lowered = line.strip().lower()
+            if not lowered:
+                filtered_lines.append(line)
+                continue
+            if any(lowered.startswith(prefix) for prefix in banned_prefixes):
+                continue
+            if "</think>" in lowered or "<think>" in lowered:
+                continue
+            filtered_lines.append(line)
+
+        cleaned = "\n".join(filtered_lines)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        return cleaned.strip()
+
+    @staticmethod
     def _chunk_page_no(chunk: Any) -> int | None:
         """Return the first page number referenced by *chunk*, or ``None``."""
         for item in getattr(getattr(chunk, "meta", None), "doc_items", None) or []:
@@ -166,7 +196,7 @@ class Chunker:
         for chunk in chunker.chunk(dl_doc=doc):
             
             # Contextualise the chunk's text content and skip if empty after stripping
-            content = chunker.contextualize(chunk).strip()
+            content = self._strip_reasoning_artifacts(chunker.contextualize(chunk))
             if not content:
                 continue
 

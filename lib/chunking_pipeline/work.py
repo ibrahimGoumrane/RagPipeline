@@ -21,6 +21,7 @@ class Work:
         use_image_processor: bool,
         model_api_url: str | None,
         model_api_model: str | None,
+        model_api_key: str | None,
         accelerator_device: str | None,
         accelerator_num_threads: int | None,
         description_api_url: str | None,
@@ -38,6 +39,7 @@ class Work:
         self.use_image_processor = use_image_processor
         self.model_api_url = model_api_url
         self.model_api_model = model_api_model
+        self.model_api_key = model_api_key
         self.accelerator_device = accelerator_device
         self.accelerator_num_threads = accelerator_num_threads
         self.description_api_url = description_api_url
@@ -57,6 +59,7 @@ class Work:
             use_image_processor=self.use_image_processor,
             model_api_url=self.model_api_url,
             model_api_model=self.model_api_model,
+            model_api_key=self.model_api_key,
             accelerator_device=self.accelerator_device,
             accelerator_num_threads=self.accelerator_num_threads,
         )
