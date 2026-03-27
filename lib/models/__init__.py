@@ -5,7 +5,6 @@ from .main import (
     ExtractRunOutput,
     DispatchRunOutput,
     WorkRunOutput,
-    MergeRunOutput,
 )
 
 __all__ = [
@@ -13,5 +12,4 @@ __all__ = [
     "ChunkRunOutput",
     "DispatchRunOutput",
     "WorkRunOutput",
-    "MergeRunOutput",
 ]

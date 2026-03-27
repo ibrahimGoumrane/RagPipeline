@@ -15,14 +15,6 @@ class ExtractRunOutput(BaseModel):
         ...,
         description="Parsed document object produced by the extraction pipeline."
     )
-    output_file: str = Field(
-        ...,
-        description="Absolute or relative path to the exported document file."
-    )
-    output_dir: str = Field(
-        ...,
-        description="Directory containing all generated extraction outputs."
-    )
 
 
 class ChunkRunOutput(BaseModel):
@@ -35,14 +27,6 @@ class ChunkRunOutput(BaseModel):
     chunks_parent: list[dict[str, Any]] = Field(
         ...,
         description="List of parent-level chunks containing metadata or hierarchical structure."
-    )
-    chunks_vector_path: str = Field(
-        ...,
-        description="File path where vector chunks JSON is stored."
-    )
-    chunks_parent_path: str = Field(
-        ...,
-        description="File path where parent chunks JSON is stored."
     )
 
 
@@ -63,8 +47,8 @@ class DispatchRunOutput(BaseModel):
     )
 
 
-class WorkRunOutput(ChunkRunOutput):
-    """Output of an individual worker processing chunks."""
+class WorkRunOutput(BaseModel):
+    """Output of an individual worker processing a page range end-to-end."""
 
     worker_id: str = Field(
         ...,
@@ -74,28 +58,3 @@ class WorkRunOutput(ChunkRunOutput):
         default="success",
         description="Execution status of the worker (e.g., 'success', 'failed')."
     )
-
-
-class MergeRunOutput(BaseModel):
-    """Output of the merge stage."""
-
-    status: str = Field(
-        default="success",
-        description="Merge operation status (e.g., 'success', 'failed')."
-    )
-    chunks_vector: list[dict[str, Any]] = Field(
-        default_factory=list,
-        description="Combined list of all vector chunks after merging worker outputs."
-    )
-    chunks_parent: list[dict[str, Any]] = Field(
-        default_factory=list,
-        description="Combined list of all parent chunks after merging worker outputs."
-    )
-    chunks_vector_path: str | None = Field(
-        default=None,
-        description="Path to the final merged vector chunks JSON file, if applicable."
-    )
-    chunks_parent_path: str | None = Field(
-		default=None,
-		description="Path to the final merged parent chunks JSON file, if applicable."
-	)

@@ -13,7 +13,7 @@ from lib.utils.logger import get_logger
 from lib.utils.timer import Timer
 
 from .dispatch import Dispatch
-from .merge import Merge
+from .store import Store
 from .work import Work
 
 
@@ -53,7 +53,6 @@ class ChunkingPipeline:
             worker_args = [
                 {
                     "pdf_path": self.cfg.pdf_path,
-                    "output_dir": self.cfg.output_dir,
                     "doc_id": self.cfg.doc_id,
                     "max_words_per_chunk": self.cfg.max_words_per_chunk,
                     "tokenizer_model": self.cfg.tokenizer_model,
@@ -66,11 +65,38 @@ class ChunkingPipeline:
                     "description_api_url": self.cfg.description_api_url,
                     "description_api_key": self.cfg.description_api_key,
                     "description_api_model": self.cfg.description_api_model,
+                    "embedding_api_url": self.cfg.embedding_api_url,
+                    "embedding_api_key": self.cfg.embedding_api_key,
+                    "embedding_model": self.cfg.embedding_model,
+                    "embedding_dim": self.cfg.embedding_dim,
+                    "embedding_batch_size": self.cfg.embedding_batch_size,
+                    "milvus_host": self.cfg.milvus_host,
+                    "milvus_port": self.cfg.milvus_port,
+                    "milvus_children_collection": self.cfg.milvus_children_collection,
+                    "milvus_parent_collection": self.cfg.milvus_parent_collection,
+                    "milvus_metric_type": self.cfg.milvus_metric_type,
+                    "milvus_hnsw_m": self.cfg.milvus_hnsw_m,
+                    "milvus_hnsw_ef_construction": self.cfg.milvus_hnsw_ef_construction,
+                    "milvus_search_ef": self.cfg.milvus_search_ef,
                     "start_page": start,
                     "end_page": end,
                 }
                 for start, end in dispatch_out.chunks
             ]
+
+            retrieval_store = Store(
+                host=self.cfg.milvus_host,
+                port=self.cfg.milvus_port,
+                children_collection=self.cfg.milvus_children_collection,
+                parent_collection=self.cfg.milvus_parent_collection,
+                vector_dim=self.cfg.embedding_dim,
+                metric_type=self.cfg.milvus_metric_type,
+                hnsw_m=self.cfg.milvus_hnsw_m,
+                hnsw_ef_construction=self.cfg.milvus_hnsw_ef_construction,
+                search_ef=self.cfg.milvus_search_ef,
+            )
+            # Clear once per run; workers append in parallel.
+            retrieval_store.clear_doc(self.cfg.doc_id)
 
             self.logger.info("Running %d workers in parallel processes", len(worker_args))
             with Timer("work_stage_parallel"):
@@ -80,15 +106,9 @@ class ChunkingPipeline:
                     max_workers=num_workers,
                 )
 
-            self.logger.info("Merging outputs")
-            vector_path = str(Path(self.cfg.output_dir) / "chunks" / "chunks_vector.json")
-            parent_path = str(Path(self.cfg.output_dir) / "chunks" / "chunks_parent.json")
+            self.logger.info("Workers complete: %d/%d succeeded", len(worker_outputs), len(worker_args))
 
-            with Timer("merge_stage"):
-                merge = Merge(vector_path=vector_path, parent_path=parent_path)
-                merge.run(worker_outputs)
-
-            self.logger.info("Pipeline complete. Output saved to %s and %s", vector_path, parent_path)
+            self.logger.info("Pipeline complete.")
 
     def run(self) -> None:
         """Public synchronous pipeline entrypoint."""

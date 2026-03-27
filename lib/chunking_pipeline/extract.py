@@ -19,7 +19,6 @@ class DoclingExtractor:
     def __init__(
         self,
         pdf_path: str,
-        output_dir: str | None = None,
         start_page: int | None = None,
         end_page: int | None = None,
         accelerator_device: str | None = None,
@@ -30,7 +29,6 @@ class DoclingExtractor:
         model_api_key: str | None = None,
     ):
         self.pdf_path = pdf_path
-        self.output_dir = Path(output_dir)
         self.start_page = start_page
         self.end_page = end_page
         self.accelerator_device = (accelerator_device or "AUTO").upper()
@@ -41,7 +39,6 @@ class DoclingExtractor:
         self.model_api_key = model_api_key or os.getenv("API_KEY", "")
         self.logger = get_logger(name="DoclingExtractor", log_level=logging.INFO)
 
-        self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def _accelerator_device(self) -> AcceleratorDevice:
         mapping = {
@@ -99,14 +96,7 @@ class DoclingExtractor:
 
     def run(self) -> ExtractRunOutput:
         result = self._convert()
-        markdown = result.document.export_to_markdown().strip() + "\n"
-        output_file = self.output_dir / "full_document.md"
-        output_file.write_text(markdown, encoding="utf-8")
-
-        self.logger.info("Extraction complete — markdown written to %s", output_file)
 
         return ExtractRunOutput(
             document=result.document,
-            output_file=str(output_file),
-            output_dir=str(self.output_dir),
         )

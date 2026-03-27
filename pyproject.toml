@@ -9,9 +9,12 @@ dependencies = [
     "pydantic>=2.11.0",
     "docling>=2.80.0",
     "transformers>=4.46.0",
+    "sentence-transformers>=3.1.1",
     "torch>=2.4.0",
     "requests>=2.32.2",
     "pymupdf>=1.27.2",
+    "pymilvus>=2.5.0",
+    "milvus-cli>=1.2.1",
 ]
 
 [[tool.uv.index]]

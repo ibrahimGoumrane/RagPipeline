@@ -14,11 +14,9 @@ Supported element types injected into children:
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import uuid
-from pathlib import Path
 from typing import Any
 
 from docling.chunking import HybridChunker
@@ -36,10 +34,6 @@ from lib.utils.logger import get_logger
 
 _DEFAULT_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 _DEFAULT_MAX_TOKENS = 512
-_BROKEN_IMAGE_PLACEHOLDER = (
-    "<!-- 🖼️❌ Image not available. "
-    "Please use `PdfPipelineOptions(generate_picture_images=True)` -->"
-)
 
 
 # ---------------------------------------------------------------------------
@@ -265,33 +259,20 @@ class Chunker:
     # Public interface
     # ------------------------------------------------------------------
 
-    def run(self, document: DoclingDocument, output_dir: str | None = None) -> ChunkRunOutput:
-        """Chunk *document* and write JSON outputs to *output_dir*.
+    def run(self, document: DoclingDocument) -> ChunkRunOutput:
+        """Chunk *document* and return in-memory parent/child outputs.
 
         Args:
             document:   Parsed :class:`DoclingDocument` to chunk.
-            output_dir: Root directory for outputs.  A ``chunks/`` sub-folder
-                        is created automatically.  Defaults to ``output/``.
 
         Returns:
-            :class:`ChunkRunOutput` with in-memory chunk lists and file paths.
+            :class:`ChunkRunOutput` with in-memory chunk lists.
         """
-        out_dir = Path(output_dir or "output") / "chunks"
-        out_dir.mkdir(parents=True, exist_ok=True)
-
         children = self._build_children(document)
         parents, children = self._build_parents(children)
         self.logger.info("Chunking complete — %d parents, %d children", len(parents), len(children))
 
-        vector_path = out_dir / "chunks_vector.json"
-        parent_path = out_dir / "chunks_parent.json"
-        vector_path.write_text(json.dumps(children, ensure_ascii=False, indent=2), encoding="utf-8")
-        parent_path.write_text(json.dumps(parents, ensure_ascii=False, indent=2), encoding="utf-8")
-        self.logger.info("Outputs written to %s", out_dir)
-
         return ChunkRunOutput(
             chunks_vector=children,
             chunks_parent=parents,
-            chunks_vector_path=str(vector_path),
-            chunks_parent_path=str(parent_path),
         )

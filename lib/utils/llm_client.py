@@ -66,6 +66,53 @@ class LLMClient:
 
         raise ValueError("Unsupported Qwen/OpenAI response payload format")
 
+    def generate_embeddings(self, inputs: str | list[str]) -> list[list[float]]:
+        """Generate embeddings from an OpenAI-compatible embeddings endpoint."""
+        normalized_inputs = [inputs] if isinstance(inputs, str) else list(inputs)
+        if not normalized_inputs:
+            return []
+
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        payload = {
+            "model": self.model,
+            "input": normalized_inputs,
+        }
+
+        response = requests.post(
+            self.api_url,
+            headers=headers,
+            json=payload,
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        rows = data.get("data")
+        if not isinstance(rows, list):
+            raise ValueError("Invalid embeddings payload: missing data list")
+
+        sorted_rows = sorted(
+            rows,
+            key=lambda row: row.get("index", 0) if isinstance(row, dict) else 0,
+        )
+
+        embeddings: list[list[float]] = []
+        for row in sorted_rows:
+            if not isinstance(row, dict) or not isinstance(row.get("embedding"), list):
+                raise ValueError("Invalid embeddings payload: each data item must contain embedding list")
+
+            embeddings.append([float(value) for value in row["embedding"]])
+
+        if len(embeddings) != len(normalized_inputs):
+            raise ValueError(
+                "Invalid embeddings payload: vector count does not match input count"
+            )
+
+        return embeddings
+
     @staticmethod
     def _parse_openai_style(data: dict[str, Any]) -> str:
         choices = data.get("choices") or []

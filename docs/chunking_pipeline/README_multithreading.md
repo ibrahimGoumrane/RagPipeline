@@ -1,126 +1,152 @@
-# PDF Ingestion — Parallel Worker Strategy
+# Worker Architecture — End-to-End Processing
 
 ---
 
-## What we are building
+## Overview
 
-A standalone Python utility that takes a single PDF and processes it in parallel using N workers.
-Each worker is responsible for a slice of pages and operates fully independently.
-Once all workers finish, their outputs are concatenated into two final files — one for parent chunks
-and one for child chunks — ready for vectorisation.
+The pipeline processes a single PDF in parallel using N workers. Each worker is responsible for a page range and operates fully independently, executing the complete ingestion lifecycle for its slice.
 
 ---
 
-## What each worker does
+## What Each Worker Does
 
-Each worker receives a page range `[n → n+m]` and performs three operations on that slice, in sequence, completely on its own.
+Each worker receives a page range `[start → end]` and performs the complete pipeline in sequence:
 
-| Step        | Operation                                                                                                                                                             |
-| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **EXTRACT** | Run Docling on its page range. Produce a structured representation of every text block, table, and heading found in those pages.                                      |
-| **CHUNK**   | Apply the semantic chunking strategy to the extracted content. Split into parent chunks (section level) and child chunks (leaf level, ~512 tokens, 64-token overlap). |
-| **SAVE**    | Write two temporary JSON files: one for its parent chunks, one for its child chunks. Files are named by worker index to avoid collisions.                             |
+| Stage       | Operation                                                            | Input                             | Output                                                |
+| ----------- | -------------------------------------------------------------------- | --------------------------------- | ----------------------------------------------------- |
+| **EXTRACT** | Run Docling on page range, extract text, tables, figures             | PDF pages `[start → end]`         | Structured document representation                    |
+| **CHUNK**   | Apply semantic chunking strategy; split into parent and child chunks | Extracted content                 | `ChunkRunOutput` with parent and child chunk lists    |
+| **EMBED**   | Generate embeddings for all child chunks using embedding API         | Child chunks                      | Chunks with embeddings (2560-dim vectors)             |
+| **STORE**   | Insert chunked data and embeddings into Milvus collections           | Embedded chunks + parent metadata | Persisted in Milvus (children and parent collections) |
 
 ---
 
-## Concatenation — final output
+## Parallel Execution
 
-After all N workers complete, a single merge step concatenates all temporary files in page order.
-Page-order sorting is critical: child chunks carry a `page_ref` field and the parent-child
-relationship must be consistent across the boundary between adjacent workers.
+All N workers run concurrently in separate OS processes using `ProcessPoolExecutor`. This approach is essential because PDF extraction (Docling) is CPU-intensive and Python's GIL prevents real parallelism with threads.
+
+**Concurrency model:**
+
+- Orchestrator (main process) dispatches all workers at once
+- Workers process independently with no shared mutable state
+- No inter-worker communication — each worker writes directly to Milvus
+- Orchestrator waits for all workers to complete before proceeding
+
+---
+
+## Why Processes, Not Threads?
+
+| Aspect                     | ProcessPoolExecutor   | ThreadPoolExecutor       |
+| -------------------------- | --------------------- | ------------------------ |
+| GIL constraint             | ❌ Not limited by GIL | ✅ Blocked by GIL        |
+| PDF extraction parallelism | ✅ True parallelism   | ❌ Serialized extraction |
+| Memory overhead            | ⚠️ Higher per-process | ✅ Shared memory         |
+| Use case fit               | ✅ CPU-intensive work | ❌ I/O-bound only        |
+
+Docling is CPU-heavy, making process-based parallelism the correct choice.
+
+---
+
+## Shared Store (Singleton)
+
+All workers share a single `Store` instance (singleton pattern) that maintains one connection to Milvus. This ensures:
+
+- Efficient connection pooling
+- Single data source of truth in Milvus
+- No duplicate or conflicting data writes
+- Clean append-only semantics per worker
+
+Before workers start, the orchestrator clears all records for the current `doc_id` in Milvus. Workers then append independently without coordination.
+
+---
+
+## Data Flow
 
 ```
-worker_0_parents.json  ─┐
-worker_1_parents.json   ├─► sort by page range → concatenate → parents.json
-worker_N_parents.json  ─┘
-
-worker_0_children.json ─┐
-worker_1_children.json  ├─► sort by page range → concatenate → children.json
-worker_N_children.json ─┘
-```
-
----
-
-## Output file structure
-
-The two final JSON files are linked by `parent_id`.
-The children file is what gets embedded into ChromaDB.
-The parents file is retrieved at query time to provide broader context around a matched child chunk.
-
-**`parents.json`**
-
-```json
-[
-  {
-    "chunk_id":   "uuid4",
-    "doc_id":     "uuid4",
-    "doc_title":  "...",
-    "page_range": [n, m],
-    "token_count": 0,
-    "children":   ["uuid4"]
-  }
-]
-```
-
-**`children.json`**
-
-```json
-[
-  {
-    "chunk_id": "uuid4",
-    "parent_id": "uuid4",
-    "doc_id": "uuid4",
-    "doc_title": "...",
-    "text": "...",
-    "token_count": 0,
-    "page_ref": 0
-  }
-]
+PDF file
+   ↓
+Dispatch → Page ranges [0-50], [50-100], ..., [N-m, N]
+   ↓
+Worker 1          Worker 2          Worker N
+EXTRACT ─→        EXTRACT ─→        EXTRACT ─→
+CHUNK ──→         CHUNK ──→         CHUNK ──→
+EMBED ──→         EMBED ──→         EMBED ──→
+└─→ STORE ────────┬──→ STORE ────────┴──→ STORE ────→ Milvus (single connection)
+                  ↓
+            All chunks indexed
 ```
 
 ---
 
-## Concurrency approach
+## Configuration
 
-Workers run in a `ProcessPoolExecutor` — separate OS processes, not threads. This is the right
-choice because Docling extraction is CPU-heavy and Python's GIL would prevent real parallelism
-with threads. The orchestrator dispatches all workers at once and waits for all of them to finish
-before merging. The utility is written as a plain async coroutine so it can be plugged into
-FastAPI later without any changes — the route simply calls it via `loop.run_in_executor()`
-and returns a job ID immediately.
+Each worker receives the same configuration for embedding and storage:
 
----
-
-## Accelerator options
-
-Docling extraction can be run with explicit accelerator settings per worker.
-
-- `ACCELERATOR_DEVICE`: `AUTO`, `CPU`, `MPS`, `CUDA`, or `XPU`
-- `ACCELERATOR_NUM_THREADS`: Number of worker threads for accelerator execution
-
-These values are passed into `PdfPipelineOptions.accelerator_options` via:
-
-```python
-AcceleratorOptions(num_threads=8, device=AcceleratorDevice.CPU)
-```
-
-Notes:
-
-- `CUDA` and `XPU` require compatible hardware and runtime.
-- `CPU` mode works everywhere.
+- **Embedding**: API endpoint URL, model name, batch size, API key
+- **Storage**: Milvus host/port, collection names, vector dimension, HNSW parameters
+- **Processing**: Tokenizer model, max words per chunk, accelerator settings
 
 ---
 
-## Design rules
+## Worker Independence
 
-| DO                                                          | DON'T                                                       |
-| ----------------------------------------------------------- | ----------------------------------------------------------- |
-| One `ProcessPoolExecutor` shared across all requests        | No `ThreadPoolExecutor` for Docling — GIL kills parallelism |
-| Workers communicate only via tmp files — no shared memory   | No blocking calls on the async event loop                   |
-| Merge strictly in page order after all workers finish       | No shared mutable state between worker processes            |
-| Utility has zero FastAPI imports — framework-agnostic       | No partial merges — wait for all N workers before concat    |
-| Each worker writes to its own tmp file (no write conflicts) | No framework coupling in the utility layer                  |
+Workers are fully independent with no shared state except the Milvus connection (via singleton Store):
+
+| Aspect                | Isolation                              |
+| --------------------- | -------------------------------------- |
+| Memory heap           | ✅ Separate per process                |
+| File handles          | ✅ Independent                         |
+| Extracted document    | ✅ Local to worker                     |
+| Chunk generation      | ✅ No synchronization needed           |
+| Embedding computation | ✅ Batch per worker                    |
+| Milvus writes         | ✅ Append-only (cleared once at start) |
 
 ---
 
-Runtime progress is emitted through the project logger rather than `print` statements.
+## Error Handling
+
+Each worker processes independently; if one worker fails:
+
+- That worker's page range is incomplete in Milvus
+- Other workers continue unaffected
+- Partial data is retrievable (chunks from successful workers remain indexed)
+- Orchestrator logs success count (`M/N succeeded`)
+
+---
+
+## Design Rules
+
+| DO                                               | DON'T                                                      |
+| ------------------------------------------------ | ---------------------------------------------------------- |
+| Use `ProcessPoolExecutor` for CPU-intensive work | Use `ThreadPoolExecutor` for Docling extraction            |
+| Share one Milvus connection (singleton Store)    | Create duplicate Store connections (connection waste)      |
+| Clear doc_id once before all workers start       | Clear per-worker (leaves gaps, overwrites)                 |
+| Append-only writes from workers to Milvus        | Per-worker conditional deletes (synchronization nightmare) |
+| Log progress from each worker independently      | Expect deterministic worker completion order               |
+| Configure workers from centralized config        | Scatter config across worker code                          |
+
+---
+
+## Runtime Flow in Main
+
+1. Load configuration
+2. Initialize singleton Store (Milvus connection established once)
+3. Clear `doc_id` from Milvus (fresh start for this ingestion)
+4. Dispatch PDF into N page ranges
+5. Launch N workers in ProcessPoolExecutor
+6. Wait for all workers to complete
+7. Log aggregate success count
+8. (Optionally) Run retrieval examples for validation
+
+---
+
+## Scalability
+
+At the expected project scale of 500 documents × 300+ pages each:
+
+- **Total chunks**: 2–3 million
+- **Collection size**: Manageable in Milvus RAM
+- **Worker count**: Typically 8–16 (one per CPU core)
+- **Query latency**: Sub-400ms (retrieval + reranking)
+
+Adding more documents or workers requires no changes to the worker code; the singleton Store handles all writes efficiently.

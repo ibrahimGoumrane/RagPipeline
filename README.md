@@ -55,7 +55,6 @@ ChunkingPipeline(config=get_config()).run()
 Configure runtime values in `.env`:
 
 - `PDF_PATH`: Input PDF path.
-- `OUTPUT_DIR`: Output directory (default: `output`).
 - `NUM_WORKERS`: Number of process workers used for dispatch/work stages.
 - `USE_IMAGE_PROCESSOR`: Enable image/figure description calls.
 - `MODEL_API_URL`: API endpoint for your model provider.
