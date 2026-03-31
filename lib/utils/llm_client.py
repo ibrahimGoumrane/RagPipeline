@@ -22,12 +22,10 @@ class LLMClient:
 
     def summarize_table(self, html_table: str) -> str:
         prompt = (
-            "Tu es un assistant d'analyse financiere. "
-            "Reponds toujours en francais, avec un ton professionnel et concis. "
-            "A partir du tableau HTML ci-dessous, redige un resume court (2-3 phrases) "
-            "des tendances principales, des valeurs notables et des comparaisons importantes. "
-            "Retourne uniquement le texte final du resume, sans preambule ni commentaire hors sujet.\\n\\n"
-            f"Table:\\n{html_table}"
+            "Analyze and describe this image in French. "
+            "Provide structured, professional content suitable for financial documents. "
+            "Focus on key data, visual elements, and important details."
+            f"Table:\n{html_table}"
         )
         return self.generate_text(prompt)
 
@@ -47,7 +45,7 @@ class LLMClient:
             image_media_type: Media type of the image (default: "image/png").
 
         Returns:
-            Description text from the vision model.
+            Description text from the vision modfel.
         """
         # Encode image to base64 if it's a file path
         if Path(image_input).exists():
@@ -82,6 +80,7 @@ class LLMClient:
                 },
             ],
             "temperature": 0.0,
+            "chat_template_kwargs": {"enable_thinking": False}
         }
 
         response = requests.post(
@@ -118,7 +117,8 @@ class LLMClient:
                 },
                 {"role": "user", "content": prompt},
             ],
-            "temperature": 0.0,
+            "temperature": 0.0,        
+            "chat_template_kwargs": {"enable_thinking": False}
         }
 
         response = requests.post(

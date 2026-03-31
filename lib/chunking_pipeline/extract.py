@@ -47,10 +47,9 @@ class DoclingExtractor:
             device=self._accelerator_device(),
         )
         options.do_ocr = False
-        options.ocr_options.lang = ["fr", "en"]
         options.do_table_structure = True
         options.generate_picture_images = True
-
+        
         return options
 
     def _convert(self):
