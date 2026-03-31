@@ -36,7 +36,7 @@ class DoclingExtractor:
         self.use_image_processor = use_image_processor
         self.model_api_url = model_api_url
         self.model_api_model = model_api_model
-        self.model_api_key = model_api_key or os.getenv("API_KEY", "")
+        self.model_api_key = model_api_key
         self.logger = get_logger(name="DoclingExtractor", log_level=logging.INFO)
 
 
