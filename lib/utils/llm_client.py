@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from typing import Any
+import base64
+from pathlib import Path
 
 import requests
 
@@ -28,6 +30,74 @@ class LLMClient:
             f"Table:\\n{html_table}"
         )
         return self.generate_text(prompt)
+
+    def describe_image(
+        self,
+        image_input: str,
+        system_prompt: str,
+        additional_headers: dict[str, str] | None = None,
+        image_media_type: str = "image/png",
+    ) -> str:
+        """Describe an image using OpenAI-compatible vision API.
+
+        Args:
+            image_input: File path to image or base64-encoded image string.
+            system_prompt: System prompt to guide the image description.
+            additional_headers: Optional additional headers to include in the request.
+            image_media_type: Media type of the image (default: "image/png").
+
+        Returns:
+            Description text from the vision model.
+        """
+        # Encode image to base64 if it's a file path
+        if Path(image_input).exists():
+            with open(image_input, "rb") as f:
+                image_data = base64.standard_b64encode(f.read()).decode("utf-8")
+        else:
+            image_data = image_input
+
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        if additional_headers:
+            headers.update(additional_headers)
+
+        payload = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": system_prompt,
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{image_media_type};base64,{image_data}",
+                            },
+                        },
+                    ],
+                },
+            ],
+            "temperature": 0.0,
+        }
+
+        response = requests.post(
+            self.api_url,
+            headers=headers,
+            json=payload,
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        text = self._parse_openai_style(data)
+        if text:
+            return text
+
+        raise ValueError("Unsupported OpenAI/Qwen vision response payload format")
 
     def generate_text(self, prompt: str) -> str:
         headers = {"Content-Type": "application/json"}

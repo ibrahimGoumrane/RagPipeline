@@ -78,10 +78,10 @@ class Work:
             pdf_path=self.pdf_path,
             start_page=self.start_page,
             end_page=self.end_page,
-            use_image_processor=self.use_image_processor,
-            model_api_url=self.model_api_url,
-            model_api_model=self.model_api_model,
-            model_api_key=self.model_api_key,
+            # use_image_processor=self.use_image_processor,
+            # model_api_url=self.model_api_url,
+            # model_api_model=self.model_api_model,
+            # model_api_key=self.model_api_key,
             accelerator_device=self.accelerator_device,
             accelerator_num_threads=self.accelerator_num_threads,
         )
@@ -98,26 +98,26 @@ class Work:
 
         chunk_result = chunker.run(document=extract_result.document)
 
-        store = Store(
-            host=self.milvus_host,
-            port=self.milvus_port,
-            children_collection=self.milvus_children_collection,
-            parent_collection=self.milvus_parent_collection,
-            vector_dim=self.embedding_dim,
-            metric_type=self.milvus_metric_type,
-            hnsw_m=self.milvus_hnsw_m,
-            hnsw_ef_construction=self.milvus_hnsw_ef_construction,
-            search_ef=self.milvus_search_ef,
-        )
-        embedder = Embed(
-            store=store,
-            embedding_api_url=self.embedding_api_url,
-            embedding_api_key=self.embedding_api_key,
-            embedding_model=self.embedding_model,
-            vector_dim=self.embedding_dim,
-            batch_size=self.embedding_batch_size,
-        )
-        embedder.ingest(chunk_result)
+        # store = Store(
+        #     host=self.milvus_host,
+        #     port=self.milvus_port,
+        #     children_collection=self.milvus_children_collection,
+        #     parent_collection=self.milvus_parent_collection,
+        #     vector_dim=self.embedding_dim,
+        #     metric_type=self.milvus_metric_type,
+        #     hnsw_m=self.milvus_hnsw_m,
+        #     hnsw_ef_construction=self.milvus_hnsw_ef_construction,
+        #     search_ef=self.milvus_search_ef,
+        # )
+        # embedder = Embed(
+        #     store=store,
+        #     embedding_api_url=self.embedding_api_url,
+        #     embedding_api_key=self.embedding_api_key,
+        #     embedding_model=self.embedding_model,
+        #     vector_dim=self.embedding_dim,
+        #     batch_size=self.embedding_batch_size,
+        # )
+        # embedder.ingest(chunk_result)
 
         return WorkRunOutput(
             worker_id=self.worker_id,
