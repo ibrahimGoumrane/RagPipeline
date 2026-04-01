@@ -78,10 +78,6 @@ class Work:
             pdf_path=self.pdf_path,
             start_page=self.start_page,
             end_page=self.end_page,
-            # use_image_processor=self.use_image_processor,
-            # model_api_url=self.model_api_url,
-            # model_api_model=self.model_api_model,
-            # model_api_key=self.model_api_key,
             accelerator_device=self.accelerator_device,
             accelerator_num_threads=self.accelerator_num_threads,
         )

@@ -22,43 +22,36 @@ class LLMClient:
 
     def summarize_table(self, html_table: str) -> str:
         prompt = (
-            "Analyze and describe this image in French. "
-            "Provide structured, professional content suitable for financial documents. "
-            "Focus on key data, visual elements, and important details."
-            f"Table:\n{html_table}"
+            "Tu es un extracteur de données pour un système RAG financier. "
+            "Extrais uniquement les faits chiffrés clés de ce tableau HTML : valeurs importantes, totaux, comparaisons entre colonnes. "
+            "Format attendu : une liste de faits courts et précis. "
+            "Interdit : descriptions du tableau, recommandations, conclusions, phrases d'introduction. "
+            "Langue : français. Longueur maximale : 10 lignes. /no_think"
+            f"\n\nTableau:\n{html_table}"
         )
         return self.generate_text(prompt)
 
     def describe_image(
         self,
         image_input: str,
-        system_prompt: str,
         additional_headers: dict[str, str] | None = None,
+        max_words: int = 512,
         image_media_type: str = "image/png",
     ) -> str:
-        """Describe an image using OpenAI-compatible vision API.
-
-        Args:
-            image_input: File path to image or base64-encoded image string.
-            system_prompt: System prompt to guide the image description.
-            additional_headers: Optional additional headers to include in the request.
-            image_media_type: Media type of the image (default: "image/png").
-
-        Returns:
-            Description text from the vision modfel.
-        """
-        # Encode image to base64 if it's a file path
-        if Path(image_input).exists():
-            with open(image_input, "rb") as f:
-                image_data = base64.standard_b64encode(f.read()).decode("utf-8")
-        else:
-            image_data = image_input
 
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         if additional_headers:
             headers.update(additional_headers)
+
+        system_prompt = (
+            "Tu es un extracteur de données pour un système RAG financier. "
+            "Extrais uniquement les données factuelles visibles : titres, valeurs numériques, labels et catégories. "
+            "Format attendu : une liste de faits courts et précis. "
+            "Interdit : descriptions visuelles (couleurs, styles, mise en page), recommandations, conclusions, phrases d'introduction. "
+            f"Langue : français. Longueur max {max_words} tokens. /no_think"
+        )
 
         payload = {
             "model": self.model,
@@ -73,14 +66,14 @@ class LLMClient:
                         {
                             "type": "image_url",
                             "image_url": {
-                                "url": f"data:{image_media_type};base64,{image_data}",
+                                "url": f"data:{image_media_type};base64,{image_input}",
                             },
                         },
                     ],
                 },
             ],
             "temperature": 0.0,
-            "chat_template_kwargs": {"enable_thinking": False}
+            "chat_template_kwargs": {"enable_thinking": False},
         }
 
         response = requests.post(
@@ -97,7 +90,6 @@ class LLMClient:
             return text
 
         raise ValueError("Unsupported OpenAI/Qwen vision response payload format")
-
     def generate_text(self, prompt: str) -> str:
         headers = {"Content-Type": "application/json"}
         if self.api_key:

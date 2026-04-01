@@ -2,7 +2,7 @@ import logging
 import os
 
 class Logger:
-    def __init__(self, name='RAGPIPELINE', log_level=logging.DEBUG, log_file_name: str = 'scraper.log'):
+    def __init__(self, name='RAGPIPELINE', log_level=logging.DEBUG, log_file_name: str = 'chunker.log'):
         self.name = name
         self.log_level = log_level
         self.log_file_name = log_file_name
@@ -69,7 +69,7 @@ class Logger:
         """Log critical message"""
         self.logger.critical(message)
 
-def get_logger(name='RAGPIPELINE', log_level=logging.DEBUG, log_file_name: str = 'scraper.log'):
+def get_logger(name='RAGPIPELINE', log_level=logging.DEBUG, log_file_name: str = 'chunker.log'):
     """Convenience function to get a configured logger"""
     logger_instance = Logger(name, log_level, log_file_name=log_file_name)
     return logger_instance.get_logger()

@@ -6,7 +6,7 @@ import logging
 
 from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
 from docling.datamodel.base_models import InputFormat
-from docling.datamodel.pipeline_options import PdfPipelineOptions
+from docling.datamodel.pipeline_options import PdfPipelineOptions, TableStructureOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
 
 from lib.models.main import ExtractRunOutput
@@ -49,7 +49,7 @@ class DoclingExtractor:
         options.do_ocr = False
         options.do_table_structure = True
         options.generate_picture_images = True
-        
+        options.generate_page_images = True
         return options
 
     def _convert(self):

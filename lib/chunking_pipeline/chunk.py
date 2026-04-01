@@ -7,112 +7,26 @@ import logging
 import uuid
 from pathlib import Path
 from typing import Any
-from docling.chunking import HybridChunker
-from docling_core.transforms.chunker.hierarchical_chunker import (
-    ChunkingDocSerializer,
-    ChunkingSerializerProvider,
-)
+import pandas as pd
+import re
+from io import StringIO
+import base64
+from io import BytesIO
+
+from docling.chunking import HybridChunker , BaseChunker
 from docling_core.transforms.chunker.tokenizer.huggingface import HuggingFaceTokenizer
-from docling_core.transforms.serializer.base import BaseDocSerializer, SerializationResult
-from docling_core.transforms.serializer.common import create_ser_result
-from docling_core.transforms.serializer.html import HTMLTableSerializer
-from docling_core.transforms.serializer.markdown import MarkdownPictureSerializer
-from docling_core.types.doc.document import DoclingDocument, PictureItem, TableItem
+from docling_core.types.doc.document import DoclingDocument
+
 from transformers import AutoTokenizer
 from typing_extensions import override
 
+from lib.chunking_pipeline.serializer import SerializerProvider 
 from lib.models.main import ChunkRunOutput
 from lib.utils.llm_client import LLMClient
 from lib.utils.logger import get_logger
 
 _DEFAULT_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 _DEFAULT_MAX_TOKENS = 512
-
-
-# ---------------------------------------------------------------------------
-# Custom Serializers
-# ---------------------------------------------------------------------------
-
-class PictureSerializer(MarkdownPictureSerializer):
-    def __init__(self, output_dir: Path, doc_id: str) -> None:
-        self.output_dir = output_dir
-        self.doc_id = doc_id
-
-    @override
-    def serialize(
-        self,
-        *,
-        item: PictureItem,
-        doc_serializer: BaseDocSerializer,
-        doc: DoclingDocument,
-        **kwargs: Any,
-    ) -> SerializationResult:
-        text_parts: list[str] = []
-
-        if item.meta is not None and item.meta.description is not None:
-            text_parts.append(f"Picture description: {item.meta.description.text}")
-
-        pil_image = item.get_image(doc)
-        if pil_image:
-            filename = f"{self.doc_id}_picture_{uuid.uuid4().hex[:8]}.png"
-            filepath = self.output_dir / filename
-            with filepath.open("wb") as fp:
-                pil_image.save(fp, "PNG")
-            text_parts.append(f"image_ref:{str(filepath)}")  # <-- inject path
-
-        text_res = "\n".join(text_parts)
-        text_res = doc_serializer.post_process(text=text_res)
-        return create_ser_result(text=text_res, span_source=item)
-    
-
-class TableSerializer(HTMLTableSerializer):
-    """Serializes table as HTML and saves image to disk."""
-
-    def __init__(self, output_dir: Path, doc_id: str) -> None:
-        self.output_dir = output_dir
-        self.doc_id = doc_id
-
-    @override
-    def serialize(
-        self,
-        *,
-        item: TableItem,
-        doc_serializer: BaseDocSerializer,
-        doc: DoclingDocument,
-        **kwargs: Any,
-    ) -> SerializationResult:
-        html_result = super().serialize(item=item, doc_serializer=doc_serializer, doc=doc, **kwargs)
-        text_parts: list[str] = [html_result.text] if html_result.text else []
-
-        pil_image = item.get_image(doc)
-        if pil_image:
-            filename = f"{self.doc_id}_table_{uuid.uuid4().hex[:8]}.png"
-            filepath = self.output_dir / filename
-            with filepath.open("wb") as fp:
-                pil_image.save(fp, "PNG")
-
-        text_res = "\n\n".join(text_parts)
-        text_res = doc_serializer.post_process(text=text_res)
-        return create_ser_result(text=text_res, span_source=item)
-
-
-class SerializerProvider(ChunkingSerializerProvider):
-    def __init__(self, output_dir: Path, doc_id: str) -> None:
-        self.output_dir = output_dir
-        self.doc_id = doc_id
-
-    def get_serializer(self, doc: DoclingDocument) -> ChunkingDocSerializer:
-        return ChunkingDocSerializer(
-            doc=doc,
-            picture_serializer=PictureSerializer(
-                output_dir=self.output_dir,
-                doc_id=self.doc_id,
-            ),
-            table_serializer=TableSerializer(
-                output_dir=self.output_dir,
-                doc_id=self.doc_id,
-            ),
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +44,7 @@ class Chunker:
         description_api_url: str | None = None,
         description_api_key: str | None = None,
         description_api_model: str | None = None,
-        output_image_dir: str = "./output_images",
+        output_image_dir: str = "./output",
     ) -> None:
         self.doc_id = doc_id or "default-doc"
         self.max_words = max_words or _DEFAULT_MAX_TOKENS
@@ -151,6 +65,11 @@ class Chunker:
             else None
         )
 
+        # Table buffer — class-level state
+        self._table_buffer: list[str] = []
+        self._table_buffer_heading: str | None = None
+        self._table_buffer_page_ref: int | None = None
+
     # ------------------------------------------------------------------
     # HybridChunker helpers
     # ------------------------------------------------------------------
@@ -162,7 +81,7 @@ class Chunker:
         )
         return HybridChunker(
             tokenizer=tokenizer,
-            merge_peers=True,
+            repeat_table_header=False,
             serializer_provider=SerializerProvider(
                 output_dir=self.output_dir,
                 doc_id=self.doc_id,
@@ -185,36 +104,155 @@ class Chunker:
     @staticmethod
     def _element_type(chunk: Any) -> str:
         for item in getattr(getattr(chunk, "meta", None), "doc_items", None) or []:
-            if isinstance(item, PictureItem):
-                return "picture"
-            if isinstance(item, TableItem):
+            if item.label == "table":
                 return "table"
+            if item.label == "picture":
+                return "picture"
         return "text"
+    # ------------------------------------------------------------------
+    # Visual description
+    # ------------------------------------------------------------------
 
     def _describe_visual(self, content: str, element_type: str) -> str:
         """Call LLM to summarize table/picture content."""
         if not self.description_client:
             return content
-
         try:
             if element_type == "table":
                 description = self.description_client.summarize_table(html_table=content)
-            else:   
+            else:
                 description = self.description_client.describe_image(
                     image_input=content,
-                    system_prompt=(
-                        "Analyze and describe this image in French. "
-                        "Provide structured, professional content suitable for financial documents. "
-                        "Focus on key data, visual elements, and important details."
-                    ),
+                    max_words=self.max_words,
                 )
-
+                
             return description
-
         except Exception as exc:
             self.logger.warning("LLM description failed: %s", exc)
             return content
+
+    # ------------------------------------------------------------------
+    # Table buffer management
+    # ------------------------------------------------------------------
+
+    def _table_buffer_accumulate(self, content: str, heading: str, page_ref: int | None) -> None:
+        """Accumulate a table chunk into the buffer."""
+        if not self._table_buffer:
+            self._table_buffer_heading = heading
+            self._table_buffer_page_ref = page_ref
+        self._table_buffer.append(content)
+
+    def _table_buffer_flush(self) -> list[dict[str, Any]]:
+        """Flush buffer — returns summary chunk + one chunk per row-header pair."""
+        if not self._table_buffer:
+            return []
+
+        combined_html = "".join(self._table_buffer)
+        heading = self._table_buffer_heading or "[Document root]"
+        page_ref = self._table_buffer_page_ref
+        chunks: list[dict[str, Any]] = []
+
+        # 1. Row chunks — one per row-header combination extracted from HTML
+        row_chunks = self._extract_table_row_chunks(combined_html, heading, page_ref)
+        chunks.extend(row_chunks)
         
+        
+        # 2. Summary chunk — LLM summary of the full table
+        summary = self._describe_visual(combined_html, "table")
+        chunks.append({
+            "chunk_id": str(uuid.uuid4()),
+            "_heading": heading,
+            "element_type": "table_summary",
+            "page_ref": page_ref,
+            "doc_id": self.doc_id,
+            "content": summary,
+            "content_for_embedding": summary,
+            "token_estimate": len(summary.split()),
+        })
+
+        # Reset buffer
+        self._table_buffer.clear()
+        self._table_buffer_heading = None
+        self._table_buffer_page_ref = None
+
+        return chunks
+    
+    def _extract_table_row_chunks(
+        self, combined_html: str, heading: str, page_ref: int | None
+    ) -> list[dict[str, Any]]:
+        """Parse HTML table and return one chunk per row-header combination using Pandas."""
+        try:
+            # 1. Parse tables. read_html returns a list of DataFrames.
+            combined_html = StringIO(combined_html)
+            tables = pd.read_html(combined_html)
+            if not tables:
+                return []
+
+            df = tables[0]
+            # Replace NaNs with empty strings to avoid "nan" text in chunks
+            df = df.fillna("")
+            
+            headers = df.columns.tolist()
+            row_chunks: list[dict[str, Any]] = []
+
+            # 2. Iterate through DataFrame rows
+            for _, row in df.iterrows():
+                
+                pairs = [
+                    f"{headers[i]}: {val}" 
+                    for i, val in enumerate(row) 
+                    if str(val).strip()
+                ]
+
+                if not pairs:
+                    continue
+
+                content = " | ".join(pairs)
+                
+                row_chunks.append({
+                    "chunk_id": str(uuid.uuid4()),
+                    "_heading": heading,
+                    "element_type": "table_row",
+                    "page_ref": page_ref,
+                    "doc_id": self.doc_id,
+                    "content": content,
+                    "content_for_embedding": content,
+                    "token_estimate": len(content.split()),
+                })
+
+            return row_chunks
+
+        except Exception as exc:
+            self.logger.warning("Row extraction failed: %s", exc)
+            return []
+        
+    # ------------------------------------------------------------------
+    # Image base64 management
+    # ------------------------------------------------------------------
+    def _handle_picture_content(self, content: str, chunk: BaseChunker, doc: DoclingDocument) -> str:
+        for item in getattr(getattr(chunk, "meta", None), "doc_items", None) or []:
+            label = str(getattr(item, "label", "")).lower()
+            if "picture" not in label:
+                continue
+
+            image = item.get_image(doc=doc)
+            if image is None:
+                self.logger.warning("Could not extract image for picture item, skipping.")
+                continue
+
+            buffer = BytesIO()
+            image.save(buffer, format="PNG")
+            base64_string = base64.b64encode(buffer.getvalue()).decode()
+
+            if not base64_string:
+                continue
+
+            image_description = self._describe_visual(base64_string, "picture")
+            clean_text = re.sub(r"Picture_.*?_Picture", "", content, flags=re.DOTALL).strip()
+            content = f"{clean_text}\n\n{image_description}".strip() if clean_text else image_description
+
+        return content
+    
     # ------------------------------------------------------------------
     # Core chunking pipeline
     # ------------------------------------------------------------------
@@ -223,67 +261,30 @@ class Chunker:
         chunker = self._build_chunker()
         children: list[dict[str, Any]] = []
 
-        # Buffer for accumulating consecutive table chunks
-        table_buffer: list[str] = []
-        table_buffer_heading: str | None = None
-        table_buffer_page_ref: int | None = None
-
-        def _flush_table_buffer() -> None:
-            """Summarize buffered table content and append as a summary chunk."""
-            if not table_buffer:
-                return
-
-            combined_html = "\n".join(table_buffer)
-            summary = self._describe_visual(combined_html, "table")
-
-            children.append({
-                "chunk_id": str(uuid.uuid4()),
-                "_heading": table_buffer_heading or "[Document root]",
-                "element_type": "table",
-                "page_ref": table_buffer_page_ref,
-                "doc_id": self.doc_id,
-                "content": summary,
-                "content_for_embedding": summary,
-                "token_estimate": len(summary.split()),
-            })
-
-            table_buffer.clear()
-
+        # Reset buffer state at start of each run
+        self._table_buffer.clear()
+        self._table_buffer_heading = None
+        self._table_buffer_page_ref = None
 
         for chunk in chunker.chunk(dl_doc=doc):
             content = chunker.contextualize(chunk)
             if not content:
                 continue
-
+                             
             element_type = self._element_type(chunk)
             heading = self._chunk_heading(chunk)
             page_ref = self._chunk_page_no(chunk)
 
             if element_type == "table":
-                if not table_buffer:
-                    table_buffer_heading = heading
-                    table_buffer_page_ref = page_ref
-                table_buffer.append(content)
+                self._table_buffer_accumulate(content, heading, page_ref)
                 continue
-
-            # Non-table chunk encountered — flush buffer first
-            _flush_table_buffer()
-
-            # Always scan for image_ref regardless of element_type
-            image_path = None
-            clean_lines = []
-            for line in content.splitlines():
-                if line.startswith("image_ref:"):
-                    image_path = line[len("image_ref:"):].strip()
-                else:
-                    clean_lines.append(line)
-
-            if image_path:
-                # Replace the image_ref line with LLM description
-                image_description = self._describe_visual(image_path, "picture")
-                clean_text = "\n".join(clean_lines).strip()
-                content = f"{clean_text}\n\n{image_description}".strip() if clean_text else image_description
-
+            
+            # Non-table chunk — flush buffer first
+            children.extend(self._table_buffer_flush())
+            
+            if element_type == "picture":
+                content = self._handle_picture_content(content, chunk, doc)
+        
             children.append({
                 "chunk_id": str(uuid.uuid4()),
                 "_heading": heading,
@@ -295,11 +296,16 @@ class Chunker:
                 "token_estimate": len(content.split()),
             })
 
-        # Flush any remaining table buffer at end of document
-        _flush_table_buffer()
+        # Flush remaining table buffer at end of document
+        children.extend(self._table_buffer_flush())
 
         self.logger.info("HybridChunker produced %d children", len(children))
         return children
+
+    # ------------------------------------------------------------------
+    # Parent grouping
+    # ------------------------------------------------------------------
+
     def _build_parents(
         self, children: list[dict[str, Any]]
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -348,7 +354,8 @@ class Chunker:
 
         with open(self.output_dir / f"{self.doc_id}_children.json", "w", encoding="utf-8") as fp:
             json.dump(children, fp, indent=2, ensure_ascii=False)
-
+        with open(self.output_dir / f"{self.doc_id}_parents.json", "w", encoding="utf-8") as fp:
+            json.dump(parents, fp, indent=2, ensure_ascii=False)
         return ChunkRunOutput(
             chunks_vector=children,
             chunks_parent=parents,
