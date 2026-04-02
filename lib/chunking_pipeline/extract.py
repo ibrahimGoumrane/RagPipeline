@@ -50,6 +50,8 @@ class DoclingExtractor:
         options.do_table_structure = True
         options.generate_picture_images = True
         options.generate_page_images = True
+
+        
         return options
 
     def _convert(self):

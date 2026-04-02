@@ -83,19 +83,19 @@ class ChunkingPipeline:
                 for start, end in dispatch_out.chunks
             ]
 
-            # retrieval_store = Store(
-            #     host=self.cfg.milvus_host,
-            #     port=self.cfg.milvus_port,
-            #     children_collection=self.cfg.milvus_children_collection,
-            #     parent_collection=self.cfg.milvus_parent_collection,
-            #     vector_dim=self.cfg.embedding_dim,
-            #     metric_type=self.cfg.milvus_metric_type,
-            #     hnsw_m=self.cfg.milvus_hnsw_m,
-            #     hnsw_ef_construction=self.cfg.milvus_hnsw_ef_construction,
-            #     search_ef=self.cfg.milvus_search_ef,
-            # )
-            # # Clear once per run; workers append in parallel.
-            # retrieval_store.clear_doc(self.cfg.doc_id)
+            retrieval_store = Store(
+                host=self.cfg.milvus_host,
+                port=self.cfg.milvus_port,
+                children_collection=self.cfg.milvus_children_collection,
+                parent_collection=self.cfg.milvus_parent_collection,
+                vector_dim=self.cfg.embedding_dim,
+                metric_type=self.cfg.milvus_metric_type,
+                hnsw_m=self.cfg.milvus_hnsw_m,
+                hnsw_ef_construction=self.cfg.milvus_hnsw_ef_construction,
+                search_ef=self.cfg.milvus_search_ef,
+            )
+            # Clear once per run; workers append in parallel.
+            retrieval_store.clear_doc(self.cfg.doc_id)
 
             self.logger.info("Running %d workers in parallel processes", len(worker_args))
             with Timer("work_stage_parallel"):
@@ -105,7 +105,7 @@ class ChunkingPipeline:
                     max_workers=num_workers,
                 )
 
-            self.logger.info("Workres complete: %d/%d succeeded", len(worker_outputs), len(worker_args))
+            self.logger.info("Workers complete: %d/%d succeeded", len(worker_outputs), len(worker_args))
 
             self.logger.info("Pipeline complete.")
 

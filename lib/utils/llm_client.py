@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
-import base64
-from pathlib import Path
-
+import json
 import requests
 
 
@@ -19,17 +17,63 @@ class LLMClient:
         self.api_key = api_key
         self.model = model
         self.timeout = timeout
-
-    def summarize_table(self, html_table: str) -> str:
-        prompt = (
-            "Tu es un extracteur de données pour un système RAG financier. "
-            "Extrais uniquement les faits chiffrés clés de ce tableau HTML : valeurs importantes, totaux, comparaisons entre colonnes. "
-            "Format attendu : une liste de faits courts et précis. "
-            "Interdit : descriptions du tableau, recommandations, conclusions, phrases d'introduction. "
-            "Langue : français. Longueur maximale : 10 lignes. /no_think"
-            f"\n\nTableau:\n{html_table}"
+    
+    def fix_and_summarize_table(
+        self,
+        html_table: str,
+        additional_headers: dict[str, str] | None = None,
+    ) -> dict[str, str]:
+        """Send raw HTML table to LLM — returns corrected HTML + summary."""
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        if additional_headers:
+            headers.update(additional_headers)
+        system_prompt = (
+            "Tu es un expert en analyse de tableaux HTML pour un système RAG financier. "
+            "Ta mission : "
+            "1. Comprendre la sémantique réelle de chaque tableau tel quel. "
+            "2. Retourner un objet JSON avec deux champs : "
+            "   - 'fixed_html' : les tableaux HTML normalisés pour lecture tabulaire. "
+            "     Règles UNIQUEMENT si nécessaire : aplatir les headers composites en une seule ligne <thead><tr><th>...</th></tr></thead> "
+            "     Si un tableau est déjà bien structuré, retourne-le tel quel sans modification. "
+            "     IMPORTANT : si plusieurs tableaux sont présents, ne jamais les fusionner en un seul. "
+            "     Les conserver séparés et les retourner les uns après les autres dans le même champ 'fixed_html'. "
+            "   - 'summary' : résumé factuel et concis de l'ensemble des données en français, chiffres clés inclus. "
+            "Format de réponse : JSON pur uniquement. Aucun markdown, aucun texte autour. /no_think"
         )
-        return self.generate_text(prompt)
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Voici le tableau HTML à corriger et résumer :\n{html_table}"},
+            ],
+            "temperature": 0.0,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+
+        response = requests.post(
+            self.api_url,
+            headers=headers,
+            json=payload,
+            timeout=self.timeout,
+        )
+        
+        response.raise_for_status()
+        data = response.json()
+        text = self._parse_openai_style(data)
+
+        try:
+            # Strip potential markdown fences just in case
+            clean = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+            result = json.loads(clean)
+            return {
+                "fixed_html": result.get("fixed_html", html_table),
+                "summary": result.get("summary", ""),
+            }
+        except (json.JSONDecodeError, AttributeError):
+            # Fallback: return original html and raw text as summary
+            return {"fixed_html": html_table, "summary": text}
 
     def describe_image(
         self,
