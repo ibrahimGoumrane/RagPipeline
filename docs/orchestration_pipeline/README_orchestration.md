@@ -1,416 +1,668 @@
-# **1\. Vue d'ensemble de l'architecture**
+# Multi-Agent Report Generation System: Revised Architecture v2.0
 
-Le systeme Blueprint est compose de deux pipelines complementaires.
-Le Pipeline A s'execute une seule fois par projet pour transformer les documents sources en base vectorielle indexee dans Milvus.
-Le Pipeline B s'execute a chaque generation de rapport : il prend en entree le plan JSON et le VectorStore, construit un graphe de queues d'execution, orchestre les agents sur l'ensemble des noeuds, et produit le document final source.
+## 1. System Overview
 
-## **1.1 Les deux pipelines**
-|     |     |     |
-| --- | --- | --- |
-| **Pipeline** | **Role** | **Caracteristiques cles** |
-| **Ingestion** | Transforme les fichiers (PDF, DOCX, MD) en vecteurs indexes dans Milvus. S'execute une seule fois par projet. | Parseur > Chunker > Embedder > Milvus. VectorStore persiste sur disque. |
-| **Generation** | Prend le plan JSON et le VectorStore. Construit le graphe de queues, orchestre les agents, produit le rapport source. | JSON > Graphe de queues > Execution sequentielle par queue > Recursion parentale > Export. |
+The system comprises two complementary pipelines:
 
-## **1.2 Philosophie de conception : Architecture orientée Agents et Services**
+- **Pipeline A (Ingestion):** Transforms source documents into vector-indexed chunks in Milvus. Runs once per project.
+- **Pipeline B (Generation):** Takes JSON plan + VectorStore, orchestrates sequential section generation via supervisor orchestration, synthesizes parent introductions, and produces the final report.
 
-Dans le contexte du Blueprint v1.1, pour garantir la clarté de l'implémentation et la maîtrise des coûts, nous distinguons deux types de composants autonomes :
+### 1.1 Key Design Principles
 
-* **Les Services (Déterministes) :** Ce sont des briques de code pures (ex: Parseur, Retriever, ReferenceBuilder). Ils reçoivent un input, exécutent une logique stricte et prévisible, et retournent un output. Ils ne "réfléchissent" pas, ils exécutent.
-* **Les Agents (Cognitifs/LLM) :** Ce sont des composants dotés d'une couche de raisonnement probabiliste (ex: Worker LLM, Agent de synthèse). Ils reçoivent un contexte flou ou complexe, prennent des décisions ou génèrent du contenu, et produisent un output structuré.
+**Service-Oriented Hybrid Architecture:**
+- **Services (Deterministic):** RAG Retriever, Quality Gate, ReferenceBuilder, Exporter
+- **Agents (Cognitive/LLM):** Worker LLM, Parent Synthesis Agent
+- **Orchestrator (Graph Architecture):** Defines workflow topology, routing logic, state transitions, and retry mechanisms via LangGraph
 
-Cette approche hybride permet de valoriser l'intelligence artificielle là où elle est nécessaire tout en gardant un contrôle d'ingénierie logiciel classique et robuste sur le reste du pipeline.
+**Three Guiding Principles:**
+1. **Single Responsibility:** Each node does one thing completely
+2. **Data Communication:** Nodes exchange only Pydantic structures (PaquetContexte, WorkerOutput, ObjetResume) via PipelineState
+3. **Separation of Concerns:**
+   - Orchestrator graph: defines *when*, *what context*, and *what transitions* occur
+   - Services: validate and prepare data deterministically
+   - Agents: decide *what to write* cognitively (LLM-based)
 
-### Trois principes directeurs gouvernent la conception :
+---
 
-* **Responsabilité unique (SRP agentique et serviciel) :** Chaque agent ou service fait une seule chose entièrement. Si un agent commence à "regarder ce que fait son voisin" ou si un service essaie de prendre une décision éditoriale, c'est un signal de mauvaise découpe.
-* **Communication par données, pas par référence :** Les agents et les services ne s'appellent pas directement entre eux de manière anarchique. Ils s'échangent uniquement des structures Pydantic bien définies (PaquetContexte, WorkerOutput, ObjetResume). La `MemoireContexte` (le State LangGraph) est le seul espace partagé, immuable après écriture.
-* **Séparation Orchestration / Décision / Génération :** * L'**Orchestrateur** (le Graphe) sait *quand* et *dans quel ordre* lancer les composants.
-    * Les **Services** préparent la donnée (ingestion, recherche, validation).
-    * Le **Worker (Agent)** sait *quoi écrire* dans sa section mais il ne sait pas ce que font ses frères.
+## 2. Component Inventory
 
-## **1.3 Inventaire complet des composants (Agents et Services)**
+| Component | Pipeline | Type | Responsibility |
+|-----------|----------|------|-----------------|
+| **RAG Service** | A & B | Service | Ingestion (`.store()`) and retrieval (`.retrieve()`) from Milvus with similarity filtering (threshold: 0.45) |
+| **Orchestrator** | B | Graph Architecture | Compiled LangGraph defining workflow topology, conditional routing (retry logic, coverage gating, synthesis triggering), state management via PipelineState, and node orchestration |
+| **Worker LLM** | B | Agent | Generates leaf node content with citations [N]; receives PaquetContexte prepared by Orchestrator |
+| **Quality Gate** | B | Service | Validates WorkerOutput on 5 criteria; sends validation details + failure reasons to Orchestrator; enables adaptive retries via Orchestrator |
+| **Parent Synthesis Agent** | B | Agent | Generates introductions for containers/root from child ObjetResume summaries (triggered after all children in a branch complete) |
+| **ReferenceBuilder** | B | Service | Creates unified global citations with global document registry (runs after all content generation) |
+| **Exporter** | B | Service | Assembles final document (DOCX/PDF/Markdown) via pre-order traversal with global citations |
 
-| Composant | Pipeline | Nature | Responsabilité unique |
-| :--- | :--- | :--- | :--- |
-| **Service RAG** | A & B | Service | Gère l'ingestion (méthode `.store()`) en encapsulant le parsing, le chunking et l'embedding. Gère la recherche (méthode `.retrieve()`) en interrogeant Milvus et en filtrant les chunks selon le seuil de similarité. |
-| **Orchestrateur** | B | Graphe | Transforme l'arbre JSON en graphe de queues. Pilote l'exécution parallélisée des queues via LangGraph. |
-| **Planificateur** | B | Service | Alloue les budgets tokens par nœud. Vérifie les contraintes de fenêtre de contexte LLM. |
-| **Worker LLM** | B | Agent | Reçoit le PaquetContexte, génère le texte de la section avec citations [N], retourne un WorkerOutput JSON. |
-| **Agent de synthèse parentale** | B | Agent | Rédige l'introduction d'un nœud conteneur depuis les ObjetResume de ses enfants directs. |
-| **Portail de Qualité** | B | Service | Valide le WorkerOutput sur 4 critères. Orchestre les 3 niveaux de réessai. |
-| **ReferenceBuilder** | B | Service | Renumérote les citations locales [N] en références globales en 3 passes séquentielles. |
-| **Exporteur** | B | Service | Assemble le document final par parcours pré-ordre. Produit DOCX, PDF ou Markdown. |
+---
 
-# **2\. Structures de donnees — modeles Pydantic**
+## 3. Data Structures
 
-## **2.1 Pipeline A — Ingestion documentaire (Implémenté)**
-
-Cette partie est déjà entièrement implémentée et encapsulée. Pour rappel, elle permet de transformer les fichiers sources en unités atomiques indexées. Les structures de données utilisées étaient les suivantes :
-
-* **SourceDocument :** Point d'entrée représentant le fichier (avec son chemin, un `doc_id` UUID4 global et ses métadonnées).
-
-* **Chunk :** Unité atomique stockée dans le VectorStore (contenant le texte, le nombre de tokens calculé, et ses métadonnées).
-
-> 💡 **Note d'architecture :** L'ensemble de ce processus d'ingestion (lecture, découpage, vectorisation et stockage dans Milvus) est désormais abstrait et exposé via la méthode `.store()` du **Service RAG**. Ce pipeline étant finalisé, notre focus exclusif se porte désormais sur le 
-
-## **2.2 Pipeline B — Structure JSON d'entree et noeud enrichi**
-
-### DEFAULT_STRUCTURE — format JSON
-
-Variable de configuration JSON définissant la structure du rapport. Appliquée automatiquement si aucun plan n'est fourni en entrée. Chaque nœud peut surcharger les paramètres globaux localement — le système applique la règle : le local prime sur le global.
-
-**Exemple concret — Rapport d'analyse stratégique :**
+### 3.1 Input: JSON Plan
 
 ```json
 {
-  "params": {
-    "tone": "academique",
-    "language": "fr",
-    "size": "moyen",
-    "audience": "jury technique"
+  "metadata": {
+    "title": "Strategic Analysis Report",
+    "tone": "academic",
+    "language": "en",
+    "audience": "technical_jury"
   },
   "sections": {
-    "title": "Rapport d'Analyse Strategique",
+    "title": "Report Title",
     "type": "root",
-    "description": "Sommet de l'arbre représentant l'ensemble du rapport.",
     "children": [
       {
-        "title": "1. Contexte et Enjeux",
+        "title": "1. Context",
         "type": "container",
-        "description": "Chapitre introductif regroupant le contexte et la problématique.",
-        "size": "court",
+        "description": "Strategic context and problem statement",
         "children": [
-          { 
-            "title": "1.1 Contexte sectoriel", 
-            "type": "feuille",
-            "description": "Analyse détaillée de l'état actuel du secteur d'activité.",
-            "children": [] 
+          {
+            "title": "1.1 Market Overview",
+            "type": "leaf",
+            "description": "Current market landscape analysis"
           },
-          { 
-            "title": "1.2 Problematique identifiee", 
-            "type": "feuille",
-            "description": "Mise en évidence du problème central traité par le rapport.",
-            "children": [] 
+          {
+            "title": "1.2 Key Problem",
+            "type": "leaf",
+            "description": "Central problem addressed"
           }
         ]
       },
       {
-        "title": "2. Analyse Comparative",
+        "title": "2. Analysis",
         "type": "container",
-        "description": "Chapitre dédié à l'étude du marché et des forces en présence.",
-        "tone": "analytique",
-        "instructions": "Privilegier les tableaux comparatifs et les chiffres cles.",
-        "children": [
-          { 
-            "title": "2.1 Benchmark des acteurs", 
-            "type": "feuille",
-            "description": "Comparaison directe des principaux concurrents ou intervenants.",
-            "children": [] 
-          },
-          { 
-            "title": "2.2 Forces et faiblesses", 
-            "type": "feuille",
-            "description": "Analyse critique des avantages et vulnérabilités détectés.",
-            "size": "long", 
-            "children": [] 
-          }
-        ]
+        "tone": "analytical",
+        "instructions": "Privilege comparative tables and key metrics",
+        "children": [...]
       }
     ]
   }
 }
 ```
 
-### **Paramètres d'un nœud**
-
-| Paramètre | Type | Obligatoire | Rôle |
-| :--- | :--- | :--- | :--- |
-| **title** | str | Oui | Titre de la section. Injecté dans le prompt Worker et dans l'export. |
-| **children** | list | Oui | Liste des nœuds enfants. Liste vide = feuille. |
-| **type** | Enum | Automatique | Définit la nature du nœud : `root` \| `container` \| `feuille`. |
-| **description** | str | Non | Résumé du périmètre ou du rôle de la section pour guider l'agent. |
-| **size** | court \| moyen \| long | Non | Surcharge du `size` global. Mappe sur un budget de 400 / 700 / 1000 tokens. |
-| **tone** | str | Non | Surcharge du `tone` global (ex: 'analytique', 'narratif', 'technique'). |
-| **audience** | str | Non | Surcharge de l'`audience` globale (ex: 'jury', 'décideur', 'technicien'). |
-| **language** | str | Non | Surcharge de la langue globale (ex: 'fr', 'en', 'ar'). |
-| **instructions** | str | Non | Consigne spécifique injectée dans le prompt de cette section uniquement. |
-
-### **Nœud — structure interne Pipeline B**
-
-| Champ | Type | Rôle |
-| :--- | :--- | :--- |
-| **id** | str | 'S2.1' — dérivé du plan JSON. Clé dans MemoireContexte. |
-| **profondeur** | int | Détermine la vague d'exécution et le niveau de titre dans l'export Word. |
-| **budget** | int | Tokens alloués. Feuille = budget_base selon size. Conteneur = 30% x somme enfants directs. |
-| **statut** | Enum | `en_attente` > `en_cours` > `termine` \| `echec`. Pilote le moteur de queues. |
-| **contenu** | str \| None | Texte généré avec citations [N] intégrées. Rempli après validation du Portail. |
-
-## **3. Modèle d'exécution — Queues séquentielles + parallélisme inter-sections**
-
-### 3.1 Principe général : de l'arbre au graphe de queues
-
-Le système utilise un modèle d'exécution hybride pour traiter l'arbre de documents généré à partir du plan JSON :
-
-* **Parallélisme entre queues :** Toutes les queues de feuilles situées à un même niveau de profondeur de l'arbre sont exécutées simultanément pour optimiser le temps de traitement global.
-* **Séquentialité à l'intérieur d'une queue :** Au sein d'une même queue (un groupe de nœuds frères), le traitement est strictement séquentiel. La feuille $N+1$ attend la complétion et le résumé de la feuille $N$ avant de démarrer.
-* **Récursion bottom-up :** Après la complétion de toutes les queues de feuilles d'un niveau, l'Agent de synthèse parentale calcule les résumés et rédige les introductions par remontée récursive des branches jusqu'à atteindre la racine.
-
-
-> 💡 **Raison d'être :** Ce modèle garantit une excellente cohérence sémantique au moment même de la génération. En transmettant le contexte du frère précédent directement dans le prompt du frère suivant, on évite les répétitions et les contradictions sans avoir à relire l'intégralité d'un document de plus de 50 pages en post-traitement.
-
-### 3.2 Construction du graphe de queues
-
-L'Orchestrateur transforme l'arbre JSON hiérarchique en un graphe de queues d'exécution en 3 étapes :
-
-1. **Identification des feuilles :** Réalisation d'un parcours récursif de l'arbre JSON. Tout nœud possédant une liste `children[]` vide est catégorisé comme une feuille (unité de rédaction).
-2. **Groupement par parent :** Les feuilles qui partagent un même nœud parent direct sont regroupées pour former une queue d'exécution. L'ordre de déclaration initial dans le JSON est strictement préservé au sein de la queue.
-3. **Contrôle `max_size` :** Si une queue d'exécution regroupe plus de feuilles que la limite `max_size` (définie par défaut à 5), le système émet une alerte. Une queue trop longue risque d'entraîner une dérive stylistique progressive ou une perte de focus du LLM au fil de la chaîne.
-
-### Exemple d'exécution concret — Rapport à 3 sections
-
-Voici le déroulement chronologique de l'orchestration en prenant pour exemple un plan composé de 3 chapitres contenant chacun des feuilles de rédaction :
-
-**Étape 1 — Construction des queues par l'Orchestrateur**
-* **Queue S1 :** [`S1.1 'Contexte sectoriel'`, `S1.2 'Problématique'`] (2 feuilles)
-* **Queue S2 :** [`S2.1 'Benchmark acteurs'`, `S2.2 'Forces/faiblesses'`] (2 feuilles)
-* **Queue S3 :** [`S3.1 'Recomm. court terme'`, `S3.2 'Recomm. long terme'`, `S3.3 'Plan action'`] (3 feuilles)
-
-**Étape 2 — Exécution (Les 3 queues partent en parallèle)**
-* **[T = 0]** Les trois queues (`Queue S1`, `Queue S2`, `Queue S3`) sont lancées simultanément.
-* **Dans la Queue S1 (Traitement séquentiel interne) :**
-    * **`t = 0`** Le Worker LLM démarre sur la feuille `S1.1`. Son prompt contient : le titre `S1.1`, ses chunks RAG et le titre limitrophe suivant `S1.2`.
-    * **`t = 8s`** Le Worker termine `S1.1` et l'objet `ObjetResume(S1.1)` est écrit dans la `MemoireContexte`.
-    * **`t = 8s`** Le Worker démarre immédiatement sur la feuille `S1.2`. Son prompt contient : le titre `S1.2`, ses chunks RAG, l'objet `ObjetResume(S1.1)` pour assurer la transition, et le titre de la section suivante `S2`.
-    * **`t = 16s`** Le Worker termine `S1.2`. L'objet `ObjetResume(S1.2)` est écrit dans la `MemoireContexte`. La Queue S1 est complétée.
-* **Dans la Queue S2 (Traitement séquentiel interne, en parallèle de S1) :**
-    * **`t = 0`** Le Worker LLM démarre sur la feuille `S2.1`.
-    * **`t = 9s`** Le Worker termine `S2.1` et l'objet `ObjetResume(S2.1)` devient disponible.
-    * **`t = 9s`** Le Worker démarre sur `S2.2`. Son prompt contient ses chunks et l'objet `ObjetResume(S2.1)`.
-    * **`t = 17s`** Le Worker termine `S2.2`. La Queue S2 est complétée.
-
-**Étape 3 — Récursion parentale (Après la complétion totale de toutes les queues)**
-Une fois toutes les feuilles rédigées et validées, l'Agent de synthèse parentale prend le relais pour remonter l'arbre :
-1. Il rédige l'introduction de **S1** à partir de `ObjetResume(S1.1)` et `ObjetResume(S1.2)`.
-2. Il rédige l'introduction de **S2** à partir de `ObjetResume(S2.1)` et `ObjetResume(S2.2)`.
-3. Il rédige l'introduction de **S3** à partir de `ObjetResume(S3.1)`, `ObjetResume(S3.2)` et `ObjetResume(S3.3)`.
-4. **[Finalisation]** Il rédige l'introduction générale de **ROOT** en s'appuyant sur les nouveaux objets `ObjetResume(S1)`, `ObjetResume(S2)` et `ObjetResume(S3)`.
-
-
-# **4\. Prompts des agents LLM**
-
-Seuls deux agents du systeme utilisent un LLM et necessitent donc un prompt structure : le Worker LLM (generation des feuilles) et l'Agent de synthese parentale (introduction des noeuds conteneurs). Leurs prompts suivent une structure en deux couches : systeme (invariant) et utilisateur (reconstruit a chaque noeud).
-
-## 4.1 Worker LLM
-
-### Prompt système — invariant
-
-> Tu es un rédacteur expert chargé de produire une section d'un rapport professionnel sourcé.
-> 
-> Règles absolues :
-> - Chaque affirmation factuelle doit être citée avec [N] où N correspond à l'index de la source fournie.
-> - Tu ne peux citer que les sources présentes dans le contexte. Aucune invention de source.
-> - Tu respectes strictement le budget tokens indiqué. Tolérance : +/- 20%.
-> - Tu évites tout chevauchement thématique avec les sections adjacentes listées.
-> - Tu t'appuies sur la description de la section fournie pour bien comprendre ton périmètre de rédaction.
-> - Si un ObjetResume de la section précédente est fourni, tu prolonges le propos sans le répéter.
-> - Si le titre de la section suivante est fourni, tu ne dépasses pas ce périmètre thématique.
-> - Tu retournes uniquement un JSON conforme au schéma WorkerOutput. Aucun texte hors du JSON.
-
-### Prompt utilisateur — reconstruit par nœud
-
-> Section à rédiger : `{noeud.titre}`
-> Type de nœud : `{noeud.type}`
-> Description du périmètre : `{noeud.description}`
-> Niveau de profondeur : `{noeud.profondeur}`
-> Ton : `{params_resolus.tone}`
-> Audience : `{params_resolus.audience}`
-> Langue : `{params_resolus.language}`
-> Budget : `{budget_tokens}` tokens
-> `[Si instructions locales]` Consigne spécifique : `{params_resolus.instructions}`
-> 
-> --- CONTEXTE INTER-FRÈRES ---
-> `[Si frère précédent existe]`
-> Section précédente '{titre_frere_N}' — résumé : `{ObjetResume_N.resume_court}`
-> 
-> `[Si frère suivant existe]`
-> La section suivante '{titre_frere_N+2}' traitera ce périmètre — ne pas empiéter.
-> 
-> Autres sections adjacentes (éviter répétitions) : `{titres_freres}`
-> 
-> --- SOURCES DISPONIBLES ---
-> [1] `{chunk_1.doc_title}` — `{chunk_1.text}`
-> [2] `{chunk_2.doc_title}` — `{chunk_2.text}`
-> ...
-> `[Si LOW_COVERAGE]` Attention : couverture documentaire limitée ({n} source(s)). Signaler l'insuffisance dans le texte.
-> `[Si NO_SOURCE en mode PERMISSIF]` Aucune source disponible pour cette section. Rédiger sans citation déclarée.
-> 
-> Produis la section en JSON WorkerOutput.
-
-## 4.2 Agent de synthèse parentale
-
-### Prompt système — invariant
-
-> Tu es un architecte de contenu chargé de rédiger l'introduction d'une section de rapport (nœud de type `container` , `root`).
-> 
-> Règles absolues :
-> - Tu rédiges uniquement depuis les résumés et les descriptions des sous-sections qui te sont fournis.
-> - Tu ne cites pas de sources directement — les citations sont gérées uniquement dans les sous-sections.
-> - Tu produis une introduction dont la contrainte de taille exacte t'est fournie dans le budget tokens utilisateur (ne dépasse pas cette limite).
-> - Tu t'appuies sur la description de la section parente pour donner une direction claire à ton texte.
-> - Tu assures la continuité tonale en respectant les marqueurs_ton fournis dans chaque ObjetResume.
-> - Tu retournes un JSON WorkerOutput valide.
-
-### Prompt utilisateur — reconstruit par nœud conteneur
-
-> Section parente : `{noeud.titre}`
-> Description du périmètre : `{noeud.description}`
-> Longueur définie par le client : `{params_resolus.size}`
-> Budget alloué : `{budget_tokens}` tokens (calculé selon le pourcentage variable appliqué à la somme des budgets des nœuds enfants)
-> 
-> Résumés des sous-sections :
-> - `[{id_enfant_1}]` `{titre_enfant_1}`
->   Description : `{description_enfant_1}`
->   Résumé : `{ObjetResume_1.resume_court}`
->   Ton observé : `{ObjetResume_1.marqueurs_ton}`
-> 
-> - `[{id_enfant_2}]` `{titre_enfant_2}`
->   Description : `{description_enfant_2}`
->   Résumé : `{ObjetResume_2.resume_court}`
->   Ton observé : `{ObjetResume_2.marqueurs_ton}`
-> 
-> Rédige l'introduction de cette section en JSON WorkerOutput.
-
-# **5\. Gestion du contexte entre agents**
-
-## 5.1 PaquetContexte — enveloppe transmise au Worker
-
-L'enveloppe complète transmise au Worker LLM avant chaque génération. Elle contient tout le contexte nécessaire et rien de plus. L'isolation est intentionnelle : le Worker ne voit que ce dont il a besoin pour sa section.
-
-| Champ | Type | Rôle |
-| :--- | :--- | :--- |
-| **noeud** | Noeud | Le nœud courant avec son budget, son type (`feuille`), sa `description` et ses `params_resolus`. |
-| **budget_tokens** | int | Contrainte dure injectée dans le prompt. Vérifié par le Portail de Qualité à +/-20%. |
-| **retrieved_chunks** | list[RetrievedChunk] | Sources injectées dans le prompt issues de la méthode `.retrieve()` du Service RAG. Le Worker cite chaque affirmation factuelle avec [N]. |
-| **resume_frere_precedent** | ObjetResume \| None | ObjetResume du frère $N$. Permet la continuité sémantique sans provoquer de context bloat (contient le résumé et les marqueurs de ton). |
-| **titre_frere_suivant** | str \| None | Titre de la section $N+2$. Délimite le périmètre thématique pour éviter les débordements. |
-| **titres_freres** | list[str] | Titres de toutes les sections adjacentes. Évite les répétitions thématiques. |
-| **instructions_globales** | str | Ton, public cible, langue — injectés dans chaque prompt Worker issus des paramètres globaux du JSON. |
-
-* **Ce que le Worker ne reçoit délibérément pas :** Le contenu complet généré des sections frères (pour éviter le dépassement de la fenêtre de contexte et le context bloat), la `MemoireContexte` complète (accès restreint au seul `ObjetResume` du frère précédent direct), et le document assemblé (qui n'existe pas encore au moment de la génération).*
-
-## **5.2 MemoireContexte — registre partagé**
-
-Dict Python en mémoire vive, partagé entre tous les composants d'une session via le State de LangGraph. Clé = node_id (ex: 'S2.1'). Accès O(1). La présence d'une clé dans le dictionnaire est le signal de complétion d'un nœud.
-
-| Propriété | Détail |
-| :--- | :--- |
-| **Structure** | `memory: dict[str, ObjetResume]` — clé = node_id (ex: 'S2.1'). |
-| **Écriture** | Un seul agent écrit chaque clé, une seule fois, après validation du Portail de Qualité. Immuable après écriture. |
-| **Lecture** | L'Orchestrateur vérifie la complétion. L'Agent de synthèse lit les `ObjetResume` des enfants directs pour rédiger l'introduction parente. |
-| **Isolation** | Le Worker LLM ne lit pas directement la `MemoireContexte`. Il reçoit uniquement l'`ObjetResume` du frère précédent extrait par l'Orchestrateur et injecté via le `PaquetContexte`. |
-
-### ObjetResume — valeur stockée
-
-| Champ | Type | Rôle |
-| :--- | :--- | :--- |
-| **resume_court** | str | 40-60 mots. Utilisé par la synthèse parentale et transmis au frère suivant pour assurer la continuité. |
-| **marqueurs_ton** | list[str] | Ex: `['academique', 'analytique', 'chiffres']`. Permettent à l'agent de synthèse de détecter et corriger la dérive stylistique dans sa transition. |
-
-# **6\. Agents de traitement — Retrieval, Validation, References**
-## 6.1 Retriever — couverture documentaire
-
-La méthode `.retrieve()` du Service RAG extrait les documents pertinents de Milvus. Afin de fiabiliser la génération du Worker LLM, chaque document extrait respecte la structure `RetrievedChunk` suivante :
-
-| Champ | Type | Rôle |
-| :--- | :--- | :--- |
-| **chunk_id** | str | Référence au chunk original dans Milvus pour le débogage. |
-| **doc_id** | str | Transmis au ReferenceBuilder pour reconstruire la citation finale. |
-| **doc_title** | str | Injecté dans le prompt : 'Source [1] — doc_title'. Évite un lookup supplémentaire. |
-| **similarity_score** | float | $sim = 1 - \text{distance cosinus}$. Chunks sous $0.45$ écartés. Triés par score décroissant. |
-| **tokens_count** | int | Nombre de tokens calculé pour le chunk. |
-| **citation_key** | str | '[1]', '[2]'... Numérotation locale par section. Renumérotée globalement par ReferenceBuilder. |
-
-### Détermination du `WarningLevel` (Logique de densité logarithmique ajustée)
-
-Pour éviter qu'un simple compte de chunks n'induise le système en erreur, le Service RAG calcule un **Score de Couverture ($SC$)** normalisé entre $0.0$ et $1.0$. Ce score pondère la qualité mathématique des textes par leur longueur, puis ajuste le résultat selon une courbe logarithmique basée sur la quantité de matière trouvée par rapport au budget d'écriture demandé pour le nœud.
-
-L'équation appliquée est la suivante :
-
-$$SC = \left( \frac{\sum_{i=1}^{N} (sim_i \times T_i)}{\sum_{i=1}^{N} T_i} \right) \times \min\left(1.0, \frac{\ln\left(1 + \frac{\sum_{i=1}^{N} T_i}{\text{Budget Noeud}}\right)}{\ln(2)}\right)$$
-
-*(Où $sim_i$ est la similarité du chunk, $T_i$ son nombre de tokens, $N$ le nombre de chunks au-dessus du seuil de $0.45$ et `Budget Noeud` la contrainte de taille de texte demandée héritée du JSON).*
-
-Voici la matrice de décision résultante pour déterminer l'état de la génération de la section :
-
-| WarningLevel | Condition de déclenchement | Comportement du système |
-| :--- | :--- | :--- |
-| **OK** | Score de Couverture $SC \ge 0.60$ | Génération normale avec sources suffisantes. |
-| **LOW_COVERAGE** | $SC$ entre $0.35$ et $0.60$ | Warning logué. Worker LLM informé de la couverture limitée ou déséquilibrée par rapport au budget cible dans son prompt (il reçoit la note $SC$ exacte) pour qu'il nuance son propos. |
-| **NO_SOURCE** | $SC < 0.35$ (matière insuffisante ou hors-sujet). | **Mode STRICT :** Section bloquée avec marqueur pour traitement humain.<br>**Mode PERMISSIF :** Worker averti qu'il doit rédiger sans aucune source (rédaction sur connaissances générales du modèle). |
-
-### 🔍 Scénarios d'Exemple (Simulation de l'algorithme)
-
-Pour tous les scénarios ci-dessous, le Worker doit rédiger une section avec un **Budget Noeud de 500 tokens**.
-
-#### Scénario A : Matière abondante et très pertinente
-* **Chunks trouvés :** 2 chunks (400 tokens à $0.85$ + 300 tokens à $0.75$). Total = 700 tokens.
-* **Moyenne pondérée :** $\frac{(0.85 \times 400) + (0.75 \times 300)}{700} = 0.807$
-* **Facteur Quantité :** $\min\left(1.0, \frac{\ln(1 + 700/500)}{\ln(2)}\right) = \min(1.0, 1.26) = 1.0$
-* **Score Final $SC$ :** $0.807 \times 1.0 = \mathbf{0.81}$ $\rightarrow$ **Niveau : OK**
-
-#### Scénario B : Matière pertinente mais très insuffisante en volume
-* **Chunks trouvés :** 1 chunk (100 tokens à $0.90$). Total = 100 tokens.
-* **Moyenne pondérée :** $0.90$
-* **Facteur Quantité :** $\min\left(1.0, \frac{\ln(1 + 100/500)}{\ln(2)}\right) = \min(1.0, \frac{0.182}{0.693}) = 0.263$
-* **Score Final $SC$ :** $0.90 \times 0.263 = \mathbf{0.24}$ $\rightarrow$ **Niveau : NO_SOURCE**
-*(Puni car 100 tokens ne suffisent pas à en rédiger 500 sans inventer).*
-
-#### Scénario C : Gros volume mais de faible qualité sémantique
-* **Chunks trouvés :** 3 chunks (300 tokens à $0.50$ + 400 tokens à $0.48$ + 300 tokens à $0.52$). Total = 1000 tokens.
-* **Moyenne pondérée :** $\approx 0.498$
-* **Facteur Quantité :** $\min\left(1.0, \frac{\ln(1 + 1000/500)}{\ln(2)}\right) = \min(1.0, 1.58) = 1.0$
-* **Score Final $SC$ :** $0.498 \times 1.0 = \mathbf{0.50}$ $\rightarrow$ **Niveau : LOW_COVERAGE**
-
-## 6.2 Portail de Qualité — 4 critères + 2 niveaux de réessai
-
-| Vérification | Condition & action |
-| :--- | :--- |
-| **JSON valide** | Sortie conforme au schéma `WorkerOutput` (Pydantic v2). |
-| **Budget respecté** | Le nombre de tokens générés doit être compris dans une fourchette de +/- 20% par rapport au budget alloué au nœud. |
-| **Pas de placeholder** | Aucun pattern `##` ou `[INSÉRER...]` dans le texte généré. |
-| **Non-redondance** | Le Portail de Qualité s'assure que le Worker n'a pas répété des phrases entières déjà présentes dans le résumé du frère précédent. |
-| **Fidélité des citations** | Le Portail vérifie (via une recherche de sous-chaîne ou un mini-LLM juge) que l'affirmation associée à la clé [N] est sémantiquement ou textuellement présente dans le chunk d'origine. |
-
-### Stratégie de secours (Fallback)
-
-Si le Portail de Qualité rejette la génération du Worker (qui utilise nativement le modèle **Qwen 3.5-9B**), le système applique jusqu'à 2 tentatives de réessai avec des stratégies d'atténuation.
-
-| Tentative | Stratégie | Modèle | Contexte / Action |
-| :--- | :--- | :--- | :--- |
-| **Premier record** | Génération initiale normale. | Qwen 3.5-9B | PaquetContexte complet. |
-| **Réessai 1** | Réduction de Budget | Qwen 3.5-9B | Le budget de tokens est réduit de 30% pour forcer le modèle à être plus concis et éviter le "remplissage" (context bloat). |
-| **Réessai 2** | Ajustement de Prompt | Qwen 3.5-9B | Le prompt est restructuré et simplifié pour guider le modèle différemment (détails de l'ajustement laissés à définir ultérieurement). |
-| **Échec final** | Insertion d'un placeholder temporaire + log système avec le `node_id`. | — | Marquage du nœud pour traitement ou révision manuelle. |
-
-## **6.3 ReferenceBuilder — renumerotation globale**
-
-Chaque Worker numerote ses citations localement (\[1\], \[2\]...). Le ReferenceBuilder unifie tout en 3 passes sequentielles apres la derniere synthese parentale, en exploitant les citations_used\[\] collectes dans chaque WorkerOutput.
-
-|     |     |     |
-| --- | --- | --- |
-| **Passe** | **Operation** | **Detail** |
-| **Collecte** | Parcours pre-ordre | Cle unique = doc_id + page_ref. Si deja vu : ajouter section dans used_in_sections. Sinon : nouvelle entree dans global_citations. |
-| **Mapping** | Local > global + regex | ('S2.1','\[1\]') -> '\[3\]' global. Regex \\\[\\d+\\\] — remplace uniquement les vraies citations. Citation inconnue -> \[?CITATION_INCONNUE\]. |
-| **Generation** | Section References | \[1\] McKinsey, AI Report 2024, p. 5 — \[2\] Gartner Research, Tech Trends 2024, p. 12. Les doublons (meme doc, pages differentes) = entrees separees. |
-
-# 8. Limitations connues et décisions architecturales assumées
-
-## 8.1 Limitations fonctionnelles de la v1.1 (Pistes d'amélioration)
-
-* **Dérive stylistique sur queues longues :** Pour les listes de frères consécutifs dépassant 5 feuilles, une dérive progressive du ton peut apparaître malgré la transmission des `ObjetResume`. Le fait de ne pas analyser l'entièreté de la branche pour des raisons de mémoire (`context bloat`) crée cet effet de bord.
-* **Absence de passe de cohérence globale :** L'absence d'une relecture finale de l'ensemble du document (50+ pages) empêche le lissage parfait des transitions entre les grandes sections (ex: entre la fin du chapitre 1 et le début du chapitre 2).
-
-## 8.2 Décisions architecturales intentionnelles (Assumées)
-
-* **StructurePlanner non implémenté :** Le schéma de structure reste une variable de configuration JSON statique. La génération dynamique d'un plan d'écriture complet basé sur l'analyse automatique des documents n'est pas dans le périmètre de la v1.1.
-* **Isolation maximale du Worker LLM :** Le Worker ne reçoit jamais le texte brut généré par ses frères, uniquement un `ObjetResume`. Ce choix reste indispensable pour protéger le système contre le dépassement de contexte (`context bloat`) du modèle Qwen.
+### 3.2 Node Internal Structure
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| **id** | str | 'S2.1' — unique node identifier |
+| **depth** | int | Tree depth (determines heading level in export) |
+| **type** | enum | `root` \| `container` \| `leaf` |
+| **title** | str | Section heading |
+| **description** | str | Scope and purpose guidance |
+| **status** | enum | `pending` > `in_progress` > `completed` \| `failed` \| `requires_human_review` |
+| **content** | str \| None | Generated text with citations [N] |
+| **params_resolved** | dict | tone, audience, language (inherited/overridden) |
+
+### 3.3 ObjetResume — Single Node Summary
+
+**Structure:**
+```python
+@dataclass
+class ObjetResume:
+    node_id: str                    # e.g., "S1.1"
+    node_title: str                 # "Market Overview"
+    contenu: str                    # Contenu du noeud produit par llm
+    resume_court: str               # 80-120 words summary of THIS node's content
+    marqueurs_ton: list[str]        # ["analytical", "data-driven"] — tonal markers
+    key_claims: list[str]           # Main factual assertions generated in this section
+```
+
+**Purpose:** Stores the *current node's* summary only. Does NOT contain previous resumes (those are accessed via `all_previous_resumes` in PaquetContexte).
+
+---
+
+## 4. Execution Model: Sequential Generation
+
+### 4.1 Execution Flow
+
+```
+[Start: Receive document structure in JSON]
+    ↓
+[Convert JSON → TOON / Clean Markdown] 
+    ├─ Removes heavy syntax (braces, quotes, trailing commas)
+    └─ Saves ~40% of prompt tokens for efficient context window consumption
+    ↓
+[Start: Parse TOON structure → Build execution node sequence]
+    ↓
+[Orchestrator initializes workflow state]
+    ↓
+[Leaf nodes execute sequentially by tree order]
+    │
+    └─→ FOR each leaf node (S1.1, S1.2, S2.1, S2.2, ...):
+        ├─ [Orchestrator retrieves sources via RAG Service]
+        ├─ [Orchestrator calculates SourceCoverageScore (SC)]
+        ├─ [Orchestrator checks SC threshold]
+        │  ├─ If SC < 0.35 → BLOCK; report to user; skip to next leaf
+        │  ├─ If 0.35 ≤ SC < 0.60 → FLAG for human review
+        │  └─ If SC ≥ 0.60 → Proceed
+        │
+        ├─ [Orchestrator prepares PaquetContexte]
+        │  └─ Fetches history from MemoireContexte mapped as:
+        │     ├─ "All Previous Sections Resumes":
+        │     │  Lists already-written sections with their distinct headers.
+        │     │  (Rule for LLM: Strictly avoid repeating these facts/contents).
+        │     │
+        │     └─ "Immediate Last Section Resume":
+        │        Specifically isolates the resume of the previous leaf.
+        │        (Rule for LLM: Use only to build a fluid narrative transition).
+        │
+        ├─ [Worker LLM generates content]
+        │  └─ Receives the newly structured PaquetContexte only
+        ├─ [Quality Gate validates WorkerOutput]
+        │  └─ If validation fails → Retry (up to 2x)
+        ├─ [Orchestrator stores current leaf ObjetResume in MemoireContexte]
+        └─ [Continue to next leaf]
+    ↓
+[Container synthesis (depth-first, bottom-up)]
+    │
+    └─→ FOR each container (starting from deepest):
+        ├─ [Orchestrator waits for all leaf children to complete]
+        ├─ [Orchestrator gathers child ObjetResume from MemoireContexte]
+        ├─ [Parent Synthesis Agent generates introduction]
+        ├─ [Quality Gate validates]
+        ├─ [Orchestrator stores container resume in MemoireContexte]
+        └─ [Continue to next container level]
+    ↓
+[Root synthesis]
+    ├─ [Parent Synthesis Agent generates document introduction]
+    ├─ [Quality Gate validates]
+    └─ [Orchestrator stores root resume]
+    ↓
+[ReferenceBuilder: Global citation renumbering]
+    ├─ [Traverse all sections in document order]
+    ├─ [Build global document registry]
+    ├─ [Map local citations to global numbers]
+    └─ [Generate References section]
+    ↓
+[Exporter: Assemble final document]
+    ├─ [Pre-order traversal of node tree]
+    ├─ [Insert content + global citations]
+    ├─ [Format DOCX/PDF/Markdown]
+    └─ [Attach metadata: flagged sections, warnings]
+    ↓
+[End: Return final document + metadata]
+```
+
+### 4.2 Sequential Guarantees
+
+- Each leaf waits for all previous leaves to complete
+- All_previous_resumes in memory = full generation history
+- No context bloat (resumes are ~100-120 words each, not full text)
+- Deterministic ordering (no race conditions)
+- Clear dependency graph (no circular waits)
+
+---
+
+## 5. Data Flow: PaquetContexte and MemoireContexte
+
+### 5.1 PaquetContexte — Per-Section Context Envelope
+
+Prepared by Orchestrator and transmitted to Worker LLM for each leaf generation:
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| **node** | Node | Current node with title, description, params_resolved |
+| **retrieved_chunks** | list[RetrievedChunk] | Top-ranked sources from `.retrieve()` with similarity >0.45 |
+| **source_coverage_score** | float | SC metric (0.0-1.0) indicating source sufficiency |
+| **all_previous_resumes** | dict[str, ObjetResume] | All prior section summaries (cumulative history, not just previous sibling) |
+| **title_next_section** | str \| None | Title of next section to avoid content overlap |
+| **params_global** | dict | tone, audience, language, instructions |
+
+**What Worker does NOT receive:** Full text of any generated section (only resumes from previous sections are visible via `all_previous_resumes`).
+
+**Relationship to MemoireContexte:**
+Each completed node stores its `ObjetResume` in MemoireContexte: `memoire_contexte[node_id] = ObjetResume`. When preparing PaquetContexte for the next node, the Orchestrator extracts all prior ObjetResume objects and passes them as `all_previous_resumes: dict[str, ObjetResume]`. This separation ensures:
+- Nodes provide single-node summaries (ObjetResume = one summary)
+- Historical context is accessed through PaquetContexte (all_previous_resumes = collection of prior summaries)
+- No duplication: previous resumes live in one place (MemoireContexte) and are shared via PaquetContexte
+
+### 5.2 MemoireContexte — Shared Resume Registry
+
+- **Structure:** `dict[str, ObjetResume]` where each key is a `node_id` and each value is that node's *single* summary
+  - Example: `{"S1.1": ObjetResume(...), "S1.2": ObjetResume(...), "S2.0": ObjetResume(...)}`
+- **Lifecycle:** One write per node (after Quality Gate validation), then immutable for that node
+- **Access Pattern:**
+  - Orchestrator reads from MemoireContexte to build `all_previous_resumes` dict for PaquetContexte
+  - Worker never reads MemoireContexte directly—only receives `all_previous_resumes` via PaquetContexte
+  - Exporter reads full MemoireContexte to assemble final document (pre-order traversal)
+- **Isolation Principal:** Nodes store their own summary; historical context shared via PaquetContexte, not by passing ObjetResume collections
+
+**Distinction:**
+- `ObjetResume` = single node's summary (stored in MemoireContexte)
+- `all_previous_resumes` = collection of prior ObjetResume objects (built by Orchestrator, passed in PaquetContexte)
+
+---
+
+## 6. Source Coverage Model
+
+### 6.1 SourceCoverageScore (SC) Calculation — Logarithmic Density Adjustment
+
+To prevent a simple chunk count from biasing the system, the orchestrator calculates a **Coverage Score ($SC$)** normalized between $0.0$ and $1.0$. This score weights the mathematical quality of texts by their length, then adjusts the result using a logarithmic curve based on the quantity of material found relative to the writing budget requested for the node.
+
+**Equation:**
+
+$$SC = \left( \frac{\sum_{i=1}^{N} (sim_i \times T_i)}{\sum_{i=1}^{N} T_i} \right) \times \min\left(1.0, \frac{\ln\left(1 + \frac{\sum_{i=1}^{N} T_i}{\text{Budget}_{\text{node}}}\right)}{\ln(2)}\right)$$
+
+**Variables:**
+- $sim_i$ = semantic similarity of chunk $i$ (minimum threshold: 0.45)
+- $T_i$ = token count of chunk $i$
+- $N$ = number of chunks above the 0.45 threshold
+- $\text{Budget}_{\text{node}}$ = token budget constraint for the node 
+
+**Two Components:**
+
+1. **Quality Weighting:** $\frac{\sum_{i=1}^{N} (sim_i \times T_i)}{\sum_{i=1}^{N} T_i}$ : weighted average of similarity scores by token count
+2. **Quantity Factor:** $\min\left(1.0, \frac{\ln(1 + \text{total\_tokens} / \text{budget})}{\ln(2)}\right)$ : logarithmic penalty if material is insufficient relative to the node's writing budget
+   - If total_tokens ≈ budget: factor ≈ 1.0 (sufficient)
+   - If total_tokens ≪ budget: factor ≪ 1.0 (penalized; worker cannot hallucinate 500 tokens from 100)
+   - If total_tokens ≫ budget: factor capped at 1.0 (abundance doesn't over-reward)
+
+### 6.2 WarningLevel Decision Matrix
+
+| Level | SC Range | Behavior |
+|-------|----------|----------|
+| **OK** | $SC \geq 0.60$ | Generate normally; Worker cites all claims with [N] |
+| **LOW_COVERAGE** | $0.35 \leq SC < 0.60$ | **Human-in-the-Loop:** Section flagged for review. Orchestrator pauses workflow and prompts user: "Section S2.1 has scarce sources (SC=0.52). Available sources: [list]. Approve generation or provide additional documents?" After human approval, Worker generates with SC value noted in metadata. |
+| **NO_SOURCE** | $SC < 0.35$ | **STRICT MODE ONLY:** Section not generated. Placeholder inserted: `[INSUFFICIENT SOURCES: S2.1 requires manual research.]` Reported in metadata. Orchestrator skips to next leaf. |
+
+**Rationale:** 
+- OK: Sufficient coverage; proceed normally
+- LOW_COVERAGE: Limited but acceptable quality; require human verification before generation to confirm document sourcing completeness
+- NO_SOURCE: Material too sparse or off-topic; no generation attempted; requires either additional documents or manual research
+
+---
+
+## 7. Source Retrieval and Citation Management
+
+### 7.1 Retrieval Output: RetrievedChunk
+
+```python
+@dataclass
+class RetrievedChunk:
+    chunk_id: str  # Unique chunk in Milvus (Root)
+    content: str  # Chunk text content (Root)
+    similarity_score: float  # 0.0–1.0 (minimum 0.45) (Root)
+
+    # All secondary and source-specific properties are nested here
+    metadata: Dict[str, Any] = field(
+        default_factory=lambda: {
+            "doc_id": "",  # Source document ID
+            "doc_title": "",  # e.g., "Annual Report 2024"
+            "heading": "",  # e.g., "Chapter 3, Section 2"
+            "page_no": None,  # Page number (if available)
+            ...: ...,  # Placeholder for other dynamic properties
+        }
+    )
+```
+
+### 7.2 Citation Workflow
+
+1. **Worker generates with local citations:**
+   ```
+   "Market leader controls 45% share [1], with competitors representing [2]..."
+   ```
+
+2. **WorkerOutput includes citation metadata:**
+   ```python
+   citations_used: [
+       {"local_key": "[1]", "chunk_id": "chunk_xyz", "doc_id": "annual_2024", "page": 5},
+       {"local_key": "[2]", "chunk_id": "chunk_abc", "doc_id": "competitor_2024", "page": 12}
+   ]
+   ```
+
+3. **Quality Gate validates citation fidelity:**
+   - Claim in "[Market leader controls 45% share]" must appear in original chunk
+   - If mismatch → Reject and retry
+
+---
+
+## 8. ReferenceBuilder: Global Citation Management
+
+### 8.1 Global Document Registry
+
+Maintain persistent registry during entire report generation:
+
+```python
+global_registry = {
+    ("annual_2024", 5, "chk_9921"): { # (doc_id, page_ref , chunk_id) = unique key
+        "global_citation": "[1]",
+        "doc_title": "Annual Report 2024",
+        "text_snippet": "Revenue increased by 12% following...",
+        "used_in_sections": ["S1.1", "S3.2"],
+        "first_appearance": "S1.1",
+    },
+    ("annual_2024", 5, "chk_9922"): {
+        "global_citation": "[2]",
+        "doc_title": "Annual Report 2024",
+        "text_snippet": "Risk factors include persistent inflation...",
+        "used_in_sections": ["S2.1"],
+        "first_appearance": "S2.1",
+    },
+    ("competitor_2024", 12, "chk_5541"): {
+        "global_citation": "[3]",
+        "doc_title": "Competitor Analysis 2024",
+        "text_snippet": "Market share dropped to 8% in Q4...",
+        "used_in_sections": ["S1.2"],
+        "first_appearance": "S1.2",
+    },
+    # ... more granular chunk mappings
+}
+```
+
+**Advantages of the Tuple Key Registry `(doc_id, page_ref, chunk_id)`**
+
+1. **Perfect Accuracy**
+   By tracking the exact text block, the system knows exactly where the AI got its facts. If a page has a chart at the top and a paragraph at the bottom, it won't mix them up.
+
+2. **No Double Counting**
+   If the AI uses the exact same paragraph in two different chapters, the system is smart enough to use the same citation number instead of making a new one.
+
+3. **Easy to Fact-Check**
+   If someone asks, *"Where did the AI find this specific number?"*, you can look at the master list and see exactly which file it came from and which chapters used it.
+---
+
+## 9. Quality Gate: Validation and Fallback
+
+### 9.1 Five Validation Criteria
+
+| Criterion | Check | Action if Fail |
+|-----------|-------|---|
+| **1. JSON Schema** | WorkerOutput matches Pydantic | Reject, retry |
+| **2. Citation Fidelity** | Each [N] claim exists in source chunk (or validate placeholder structure for NO_SOURCE) | Reject, retry |
+| **3. No Unallowed Patterns** | No unstructured placeholders like `##`, `[TODO]`, `[INSERT...]` (but structured placeholders like `[INSUFFICIENT SOURCES: ...]` are valid) | Reject, retry |
+| **4. Non-Redundancy** | Significant overlap with `all_previous_resumes` summaries? | Minor: warn & proceed. Major: reject, retry |
+| **4. Continuity** | Is the flow between the previous section n - 1 and this one n smooth? | Compares the start of section $N$ with the summary of $N-1$. If coherence is below the threshold, it rejects and retries to fix the transition. |
+
+### 9.2 Retry Strategy with Orchestrator Feedback
+
+| Attempt | Quality Gate Action | Feedback to Orchestrator | Orchestrator Re-generation | Notes |
+|---------|----------|---|---|---|
+| **1st attempt** | Validate output | Pass/Fail + failure reasons | N/A | Normal generation with full context |
+| **Validation fails** | Return: `{"status": "FAIL", "failed_criteria": [...], "details": "Citation [2] not found in source"}` | Orchestrator receives structured error object with: criterion, reason, conflicting data | **Retry 1:** Modify prompt with specific feedback. Example: "Citation issue detected in [2]. Rewrite using only [1] and [3]. Focus on verified claims." | PaquetContexte adapted based on failure reason |
+| **Retry 1** | Validate output | Pass/Fail + updated failure reasons | Continue if pass; else proceed to Retry 2 | Simplify prompt; focus on clarity per specific failure |
+| **Retry 2** | Validate output | Pass/Fail; if fail, mark section | **Retry 2:** Reduce context window. Provide explicit instruction list. "Must cite: A, B, C. No redundancy with S1.1." | Reduce context; increase constraints |
+| **Final Failure** | Reject output; return `{"status": "UNRECOVERABLE_FAIL", "criteria_failed": [...]}` | Orchestrator receives final failure signal | **Mark section for human review.** Status: `REQUIRES_HUMAN_REVIEW` | Do NOT insert placeholder in final doc; instead, user notification in metadata |
+| **NO_SOURCE case** | Validate placeholder structure: `[INSUFFICIENT SOURCES: section_id requires manual research.]` | Passes if structured correctly; validates that human can clearly see the gap in sources | **Accept placeholder:** Orchestrator records in metadata that this section requires manual research. Move to next section. | Quality Gate validates placeholder validity even though no LLM content was generated |
+
+**Important:** Quality Gate validation applies to ALL outputs, including retry attempts.
+
+### 9.3 Quality Gate Feedback Data Structure
+
+When validation fails, Quality Gate returns a structured feedback object to Orchestrator:
+
+```python
+@dataclass
+class CriterionViolation:
+    # Machine-readable code (e.g., "ERR_CITATION_NOT_FOUND")
+    error_code: str
+    # Human-readable message
+    error_message: str
+    # Clear instructions to feed straight back into the LLM prompt
+    recommendation: str
+
+
+@dataclass
+class ValidationFailure:
+    status: str  # "FAIL" | "UNRECOVERABLE_FAIL"
+    attempt_number: int  # 0 (1st attempt), 1 (Retry 1), 2 (Retry 2)
+    failed_criteria: List[str]  # ["Citation Fidelity", "Non-Redundancy"]
+
+    # Fixed, predictable dictionary mapping criteria to our violation objects
+    details: Dict[str, CriterionViolation]
+```
+
+**Orchestrator uses this feedback to:**
+1. Identify specific failures (not generic retry)
+2. Modify prompt with targeted instructions
+3. Track cumulative failures (if same criterion fails 2x, escalate to human review)
+
+---
+
+## 10. LLM Prompts (Streamlined)
+
+### 10.1 Worker LLM — System Prompt
+
+```
+You are a professional report writer producing a section of a sourced business document.
+
+ABSOLUTE RULES:
+- Every factual claim MUST have a citation [N] corresponding to provided sources.
+- Use ONLY information from "RAG SOURCES" write the content for "CURRENT SECTION TARGET". No hallucination.
+- Output ONLY valid JSON matching WorkerOutput schema. No markdown, no prose.
+- Do NOT repeat or re-explain any facts or topics found in the "ALL PREVIOUS SECTION SUMMARIES" block above.
+- Use the "TRANSITION POINT" summary above to create a natural transition into your opening sentences. Write the ending of this section to lead smoothly into the upcoming FLOW TARGET  section.
+
+OUTPUT FORMAT:
+{
+  "contenu": "Section text with [1] citations integrated...",
+  "resume_court": "80-120 word summary for next sections",
+  "marqueurs_ton": ["academic", "analytical"],
+  "key_claims": ["claim 1", "claim 2"],
+  "citations_used": [
+        {
+            "citation_label": "[1]",
+            "chunk_id": "chk_9921",
+        },
+        {
+            "citation_label": "[2]",
+            "chunk_id": "chk_5541",
+        }
+    ]
+}
+```
+
+### 10.2 Worker LLM — User Prompt (Per-Section), built by the Orchestrator
+
+```
+--- CURRENT SECTION TARGET ---
+Section ID: {current_node.id}
+Title: {current_node.title}
+Depth: {current_node.depth}
+Audience: {current_node.audience}
+Tone: {current_node.tone}
+
+--- ALL PREVIOUS SECTION SUMMARIES ---
+{all_previous_resumes_formatted}
+
+--- TRANSITION POINT (IMMEDIATE PREVIOUS SECTION) ---
+Header: {previous_node.title}
+Resume: {previous_node.resume}
+
+--- FLOW TARGET (NEXT SECTION) ---
+Header: {next_node.title}
+
+--- RAG SOURCES ---
+{sources_formatted}
+
+--- CRITICAL WRITING SCOPE ---
+- Description: {current_node.description}
+
+Generate the JSON payload for {current_node.id} 
+```
+
+### 10.3 Parent Synthesis Agent — System Prompt
+
+```
+You are a professional report writer producing high-level introductions and bridge summaries for container sections (chapters and branches).
+
+ABSOLUTE RULES:
+- Do NOT use bracketed citations [N]. The children nodes handle the raw sources; your job is strictly to synthesize.
+- Synthesize, don't stitch: Create a cohesive narrative from the children's summaries. Connect their core themes naturally.
+- Output ONLY valid JSON matching WorkerOutput schema. No markdown, no prose.
+- Ensure tonal consistency by utilizing the tone markers provided by the children.
+- Use the "CHILDREN SUMMARIES" provided in the user prompt to draft this chapter's introductory text.
+
+OUTPUT FORMAT:
+{
+  "contenu": "High-level chapter synthesis text without citations...",
+  "resume_court": "80-120 word summary of this container for future parent nodes",
+  "marqueurs_ton": ["academic", "analytical"],
+  "key_claims": ["Major theme 1 identified", "Major theme 2 identified"],
+}
+```
+
+### 10.4 Parent Synthesis Agent — User Prompt (Per-Container), built by the Orchestrator
+
+```
+--- CURRENT CONTAINER TARGET ---
+Container ID: {current_node.id}
+Title: {current_node.title}
+Depth: {current_node.depth}
+Audience: {current_node.audience}
+Tone: {current_node.tone}
+
+--- CHILDREN SUMMARIES ---
+{for child in children:}
+  Header: {child.title}
+  Resume: {child.resume}
+{end}
+
+Generate the JSON payload for the container {current_node.id}.
+```
+
+---
+
+## 11. Orchestrator: Graph Architecture & Orchestration Logic
+
+The **Orchestrator is not a single node, but rather the entire compiled LangGraph**, a state machine that coordinates workflow topology, routing logic, and state transitions across all processing nodes.
+
+### 11.1 Orchestrator as Graph Architecture
+
+**Conceptual Model:**
+```
+PipelineOrchestrator (Compiled LangGraph)
+├── State Management: PipelineState
+│   ├── current_node (workflow position)
+│   ├── all_node_outputs (accumulated results)
+│   ├── memory_context (shared history)
+│   ├── validation_failure (feedback from Quality Gate)
+│   ├── attempt_count (retry counter: 0, 1, 2)
+│   └── metadata (flagged sections, warnings)
+│
+├── Orchestration Nodes:
+│   ├── worker_llm (state-driven: attempt_count tracks generation_attempt, retry_1, retry_2)
+│   ├── quality_gate
+│   ├── parent_synthesis
+│   ├── reference_builder
+│   └── exporter
+│
+└── Conditional Routing Logic:
+    ├── If validation success → next_section (or parent_synthesis if all leaves done)
+    ├── If validation fail & attempt_count < 2 → re-invoke worker_llm (incremented state)
+    ├── If validation fail & attempt_count ≥ 2 → mark_human_review
+    ├── If all leaves complete → trigger_parent_synthesis
+    ├── If all containers complete → trigger_root_synthesis
+    └── If all synthesis complete → reference_builder → exporter
+```
+
+### 11.2 Graph Nodes (Individual Components)
+
+The Orchestrator graph contains these execution nodes:
+
+| Node | Type | Responsibility | Triggered From State | Output State | Called By |
+|------|------|---|---|---|---|
+| **worker_llm** | Agent | Generate or regenerate section content. Orchestrator adapts context & prompt based on ValidationFailure feedback and attempt_count. | `pending` |  `finished` | Orchestrator routing; loops back if validation fails |
+| **quality_gate** | Service | Validate WorkerOutput against 5 criteria; return ValidationFailure if needed | `pending` (after worker_llm runs) | `passed` (success) or `failed` (validation error) | Immediately after worker_llm |
+| **parent_synthesis** | Agent | Generate container/root intro from child resumes | `pending` (all leaves in `passed` state) | `finished` | Orchestrator after all leaves complete |
+| **reference_builder** | Service | Global citation mapping (3-pass algorithm) | `pending` (all content in `passed` state) | `finished` | Orchestrator after all synthesis complete |
+| **exporter** | Service | Assemble final DOCX/PDF/Markdown | `pending` (all citations remapped) | `finished` | Orchestrator final stage |
+
+### 11.3 Orchestration Responsibilities (Graph-Level)
+
+**The orchestrator graph is responsible for:**
+
+1. **Retrieval & Coverage Assessment**
+   - Before worker invocation: call RAG Service `.retrieve()`
+   - Calculate SourceCoverageScore (SC)
+   - Route: OK → invoke worker_llm (section state: `pending` → `worker_llm` processing); LOW_COVERAGE → flag + wait for human approval; NO_SOURCE → insert placeholder, mark state `finished`
+
+2. **Context Preparation**
+   - Fetch from MemoireContexte: all_previous_resumes, sibling titles, metadata
+   - Construct PaquetContexte with all required fields
+   - Pass via PipelineState to worker node
+
+3. **Adaptive Retry Orchestration** *(the key graph responsibility)*
+   - After Quality Gate validation failure, examine ValidationFailure object
+   - Extract `failed_criteria`
+   - **Increment attempt_count** in PipelineState
+   - Modify PaquetContexte (reduce context, pin sources, add constraints based on attempt_count)
+   - Modify worker prompt (inject  targeted instructions)
+   - **Re-invoke worker_llm node** with updated state (same node, different context/prompt)
+   - Track cumulative failures per criterion (if same criterion fails at attempt_count=2 → escalate)
+
+4. **State Transitions & Sequencing**
+   - Sequence leaf generation left→right (deterministic order)
+   - Wait for current leaf to complete (all retries exhausted) before next leaf
+   - Detect when all leaves complete → trigger parent synthesis (bottom-up)
+   - Detect when all containers complete → trigger root synthesis
+   - Sequential guarantees: no race conditions, clear dependency graph
+
+5. **Metadata Management**
+   - Track section status in PipelineState: pending → in_progress → completed/failed/requires_human_review
+   - Accumulate validation errors per section
+   - Flag LOW_COVERAGE sections for human approval
+   - Collect NO_SOURCE sections for reporting
+   - Prepare user-facing report at end
+
+
+### 11.4 Orchestration vs. Node Responsibilities
+
+**Orchestrator (Graph):**
+- Decides *when* to invoke nodes
+- Decides *what context* to provide (PaquetContexte construction)
+- Decides *how to route* based on node output
+- Manages *retry sequences*
+
+**Worker/Parent/Services (Nodes):**
+- Receive PipelineState → read PaquetContexte
+- Execute their logic independently
+- Write results to PipelineState
+- Return control to orchestrator (no inter-node calls)
+
+---
+
+## 12. Execution Summary: Sequential Workflow
+
+### 12.1 High-Level Sequential Flow
+
+```
+1. [INPUT] Load JSON plan → Parse nodes into sequence
+2. [ORCHESTRATOR INIT] Initialize MemoireContexte, status tracking
+3. [GENERATION] For each leaf (sequentially):
+   a. Orchestrator retrieves chunks from Milvus
+   b. Orchestrator calculates coverage SC
+   c. If SC < 0.35 → BLOCK; report to user; skip
+   d. If 0.35 ≤ SC < 0.60 → FLAG for human review (wait for approval)
+   e. If SC ≥ 0.60 → Proceed
+   f. Orchestrator creates PaquetContexte with all_previous_resumes
+   g. Orchestrator calls Worker LLM
+   h. Quality Gate validates (retry up to 2x if needed) [see 12.2 for feedback loop]
+   i. Orchestrator stores ObjetResume in MemoireContexte
+4. [SYNTHESIS] For each container (depth-first, bottom-up):
+   a. Orchestrator gathers child ObjetResume from MemoireContexte
+   b. Orchestrator calls Parent Synthesis Agent
+   c. Quality Gate validates
+   d. Orchestrator stores in MemoireContexte
+5. [ROOT SYNTHESIS] Orchestrator calls Parent Synthesis for root
+6. [REFERENCES] ReferenceBuilder: Global citation mapping
+7. [EXPORT] Exporter: Assemble DOCX/PDF/Markdown with References
+8. [OUTPUT] Return final document + metadata (flagged sections, warnings)
+```
+---
+
+## 13. Known Limitations & Future Improvements
+
+### 13.1 Current Limitations (v2.0)
+
+- **Sequential slower than parallel:** Trade-off for simplicity and dependency handling
+- **No dynamic structure:** JSON plan static (no auto-generation from documents)
+- **Human-in-loop manual:** Requires UI/user interaction for LOW_COVERAGE approval
+
+### 13.2 Future Enhancements  
+
+- Dynamic structure planner (auto-generate outline from document analysis)
+- Multi-model fallback (switch to better model if primary fails)
+- Intelligent context summarization (compress all_previous_resumes if it grows too large)
